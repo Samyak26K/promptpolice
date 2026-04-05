@@ -1,16 +1,20 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends, Request
 
-from app.models.schemas import EvaluateRequest, EvaluationResponse
-from app.services.evaluation_engine import EvaluationEngine
+from app.core.dependencies import get_evaluation_pipeline
+from app.models.api import EvaluateRequest, EvaluateResponse
+from app.services.evaluation_pipeline import EvaluationPipeline
 
 router = APIRouter()
-engine = EvaluationEngine()
 
 
-@router.post("/evaluate", response_model=EvaluationResponse)
-async def evaluate(payload: EvaluateRequest) -> EvaluationResponse:
-    return await engine.evaluate(
+@router.post("/evaluate", response_model=EvaluateResponse)
+async def evaluate(
+    payload: EvaluateRequest,
+    request: Request,
+    pipeline: EvaluationPipeline = Depends(get_evaluation_pipeline),
+) -> EvaluateResponse:
+    return await pipeline.evaluate(
         prompt=payload.prompt,
         response=payload.response,
-        model=payload.model,
+        request_id=request.state.request_id,
     )

@@ -1,0 +1,53 @@
+SafeNet Ai/
+├── .env.example
+├── README.md
+├── requirements.txt
+├── app/
+│   ├── __init__.py
+│   ├── main.py
+│   ├── api/
+│   │   ├── __init__.py
+│   │   └── v1/
+│   │       ├── __init__.py
+│   │       ├── router.py
+│   │       └── routes/
+│   │           ├── __init__.py
+│   │           └── evaluate.py
+│   ├── core/
+│   │   ├── __init__.py
+│   │   ├── config.py
+│   │   ├── dependencies.py
+│   │   ├── errors.py
+│   │   └── logging.py
+│   ├── models/
+│   │   ├── __init__.py
+│   │   └── api.py
+│   └── services/
+│       ├── __init__.py
+│       ├── evaluation_pipeline.py
+│       ├── ollama_client.py
+│       └── detectors/
+│           ├── __init__.py
+│           ├── hallucination_detector.py
+│           ├── models.py
+│           ├── pii_detector.py
+│           └── toxicity_detector.py
+├── frontend/
+│   ├── index.html
+│   ├── package.json
+│   ├── package-lock.json
+│   ├── vite.config.js
+│   ├── dist/
+│   └── src/
+│       ├── App.jsx
+│       ├── main.jsx
+│       ├── styles.css
+│       └── api/
+│           └── apiClient.js
+└── tests/
+	├── contract/
+	│   └── test_evaluate_contract.py
+	├── failure/
+	│   └── test_failure_modes.py
+	└── unit/
+		└── test_detectors.py
