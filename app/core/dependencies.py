@@ -1,5 +1,6 @@
 from functools import lru_cache
 
+from app.services.detectors.fact_checker import FactChecker
 from app.services.detectors.hallucination_detector import HallucinationDetector
 from app.services.detectors.pii_detector import PIIDetector
 from app.services.detectors.toxicity_detector import ToxicityDetector
@@ -28,9 +29,15 @@ def get_pii_detector() -> PIIDetector:
 
 
 @lru_cache(maxsize=1)
+def get_fact_checker() -> FactChecker:
+    return FactChecker()
+
+
+@lru_cache(maxsize=1)
 def get_evaluation_pipeline() -> EvaluationPipeline:
     return EvaluationPipeline(
         hallucination_detector=get_hallucination_detector(),
         toxicity_detector=get_toxicity_detector(),
         pii_detector=get_pii_detector(),
+        fact_checker=get_fact_checker(),
     )

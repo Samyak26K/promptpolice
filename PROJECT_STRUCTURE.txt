@@ -1,5 +1,5 @@
 SafeNet Ai/
-├── .env.example
+├── .env
 ├── README.md
 ├── requirements.txt
 ├── app/

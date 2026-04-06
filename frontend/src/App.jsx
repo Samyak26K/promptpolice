@@ -34,6 +34,21 @@ function riskMeta(risk) {
   };
 }
 
+function factStatusMeta(status) {
+  const normalized = String(status || "").toLowerCase();
+
+  if (normalized === "verified") {
+    return { label: "Verified", classes: "border-emerald-500/30 bg-emerald-500/10 text-emerald-300" };
+  }
+  if (normalized === "partially_verified") {
+    return { label: "Partially Verified", classes: "border-amber-500/30 bg-amber-500/10 text-amber-300" };
+  }
+  if (normalized === "contradictory") {
+    return { label: "Contradictory", classes: "border-rose-500/40 bg-rose-500/10 text-rose-300" };
+  }
+  return { label: "Unverified", classes: "border-slate-500/30 bg-slate-500/20 text-slate-200" };
+}
+
 function BrainIcon() {
   return (
     <svg viewBox="0 0 24 24" fill="none" className="h-4 w-4" aria-hidden="true">
@@ -114,6 +129,8 @@ export default function App() {
   const [error, setError] = useState("");
 
   const currentRisk = useMemo(() => riskMeta(result?.risk || "Low"), [result]);
+  const currentFactStatus = useMemo(() => factStatusMeta(result?.factCheck?.status || "unverified"), [result]);
+  const relevanceNote = result?.alignmentNote || "";
 
   const loadSample = () => {
     setPrompt(SAMPLE_PROMPT);
@@ -131,14 +148,34 @@ export default function App() {
     try {
       const data = await evaluateOutput({ prompt, response });
       const confidence = Math.round(Number(data?.summary?.confidence ?? 0));
+      const relevanceScore = Number(data?.relevance_score ?? 0);
       const risk = data?.summary?.risk_level || "high";
       const hallucination = Boolean(data?.detectors?.hallucination?.flag);
       const toxicity = Boolean(data?.detectors?.toxicity?.flag);
       const pii = Boolean(data?.detectors?.pii?.flag);
+      const rawFactCheck = data?.detectors?.fact_check || {};
+      const factMode = String(rawFactCheck?.mode || "standard");
+      const isReferenceOnly = factMode === "reference_only";
+      const factScore = isReferenceOnly
+        ? null
+        : Number(rawFactCheck?.score ?? 0.5);
+      const factStatus = String(rawFactCheck?.status || "unverified");
+      const factClaims = Array.isArray(rawFactCheck?.claims)
+        ? rawFactCheck.claims
+        : [];
+      const factReferences = Array.isArray(rawFactCheck?.references)
+        ? rawFactCheck.references
+        : [];
+      const factMessage = String(rawFactCheck?.message || "No verifiable facts detected. Here are some relevant sources you can explore:");
+      const alignmentNote = String(data?.alignment_note || (relevanceScore < 0.4 ? "This response has low alignment with the user query" : ""));
 
       const explanation = [
+        "Confidence score reflects safety and reliability, while relevance score reflects alignment with the user query.",
         data?.detectors?.hallucination?.reason || "No hallucination reason provided.",
       ];
+      if (alignmentNote) {
+        explanation.push(alignmentNote);
+      }
       if (Array.isArray(data?.detectors?.toxicity?.categories) && data.detectors.toxicity.categories.length > 0) {
         explanation.push(`Toxicity categories: ${data.detectors.toxicity.categories.join(", ")}`);
       }
@@ -152,7 +189,17 @@ export default function App() {
 
       setResult({
         confidence,
+        relevanceScore: Math.round(relevanceScore * 100),
         risk,
+        factCheck: {
+          score: factScore === null ? null : Math.round(factScore * 100),
+          status: factStatus,
+          mode: factMode,
+          references: factReferences,
+          message: factMessage,
+          claims: factClaims,
+        },
+        alignmentNote,
         flags: {
           hallucination,
           toxicity,
@@ -273,6 +320,16 @@ export default function App() {
                     </div>
 
                     <div className="rounded-2xl border border-white/10 bg-slate-900/60 p-4">
+                      <p className="text-xs uppercase tracking-[0.2em] text-slate-400">Relevance Score</p>
+                      <div className="mt-3 flex items-end gap-2">
+                        <span className="text-4xl font-bold text-white">{result.relevanceScore}%</span>
+                      </div>
+                      <div className="mt-4 h-2 overflow-hidden rounded-full bg-white/10">
+                        <div className="h-full rounded-full bg-cyan-400" style={{ width: String(result.relevanceScore) + "%" }} />
+                      </div>
+                    </div>
+
+                    <div className="rounded-2xl border border-white/10 bg-slate-900/60 p-4">
                       <p className="text-xs uppercase tracking-[0.2em] text-slate-400">Risk Level</p>
                       <div className={"mt-3 inline-flex items-center gap-2 rounded-full border px-3 py-1 text-sm font-semibold " + currentRisk.wrapper}>
                         <span className={"h-2.5 w-2.5 rounded-full " + currentRisk.dot} />
@@ -281,6 +338,12 @@ export default function App() {
                       <p className="mt-4 text-sm text-slate-400">Green means safer output, yellow means medium risk, red means high risk.</p>
                     </div>
                   </div>
+
+                  {relevanceNote ? (
+                    <div className="rounded-2xl border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-100">
+                      {relevanceNote}
+                    </div>
+                  ) : null}
 
                   <div className="rounded-2xl border border-white/10 bg-slate-900/60 p-4">
                     <p className="text-sm font-semibold text-white">Flags</p>
@@ -299,6 +362,92 @@ export default function App() {
                         <li key={note}>{note}</li>
                       ))}
                     </ul>
+                  </div>
+
+                  <div className="rounded-2xl border border-white/10 bg-slate-900/60 p-4">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <p className="text-sm font-semibold text-white">Fact Check</p>
+                      <span className={"inline-flex items-center rounded-full border px-3 py-1 text-xs font-semibold " + currentFactStatus.classes}>
+                        {currentFactStatus.label}
+                      </span>
+                    </div>
+
+                    {result.factCheck?.mode === "reference_only" ? (
+                      <div className="mt-3 rounded-xl border border-white/10 bg-slate-950/50 p-4">
+                        <p className="text-sm font-semibold text-white">No verifiable facts found</p>
+                        <p className="mt-2 text-sm text-slate-300">
+                          {result.factCheck?.message || "No verifiable facts detected. Here are some relevant sources you can explore:"}
+                        </p>
+
+                        {Array.isArray(result.factCheck?.references) && result.factCheck.references.length > 0 ? (
+                          <div className="mt-4">
+                            <p className="text-xs uppercase tracking-[0.2em] text-slate-400">Related References</p>
+                            <div className="mt-2 space-y-1">
+                              {result.factCheck.references.map((source) => (
+                                <a
+                                  key={source.url}
+                                  href={source.url}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="block text-sm text-cyan-300 underline decoration-cyan-500/50 underline-offset-2 hover:text-cyan-200"
+                                >
+                                  [{source.source}] {source.title}
+                                </a>
+                              ))}
+                            </div>
+                          </div>
+                        ) : (
+                          <p className="mt-3 text-sm text-slate-400">No related references are available right now.</p>
+                        )}
+                      </div>
+                    ) : (
+                      <>
+                        <div className="mt-3 rounded-xl border border-white/10 bg-slate-950/50 p-3">
+                          <p className="text-xs uppercase tracking-[0.2em] text-slate-400">Fact Score</p>
+                          <p className="mt-1 text-2xl font-bold text-white">{result.factCheck?.score ?? 0}%</p>
+                        </div>
+
+                        {result.factCheck?.claims?.length ? (
+                          <div className="mt-4 space-y-3">
+                            {result.factCheck.claims.map((item, idx) => (
+                              <div key={String(item?.claim || idx)} className="rounded-xl border border-white/10 bg-slate-950/50 p-3">
+                                <p className="text-sm font-semibold text-slate-100">Claim {idx + 1}</p>
+                                <p className="mt-1 text-sm text-slate-300">{item.claim}</p>
+
+                                <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
+                                  <span className="rounded-full border border-white/10 px-2 py-1 text-slate-200">
+                                    Verdict: {item.verdict}
+                                  </span>
+                                  <span className="rounded-full border border-white/10 px-2 py-1 text-slate-200">
+                                    Confidence: {Math.round(Number(item.confidence || 0) * 100)}%
+                                  </span>
+                                </div>
+
+                                <p className="mt-2 text-xs text-slate-400">{item.explanation}</p>
+
+                                {Array.isArray(item.sources) && item.sources.length > 0 ? (
+                                  <div className="mt-3 space-y-1">
+                                    {item.sources.map((source) => (
+                                      <a
+                                        key={source.url}
+                                        href={source.url}
+                                        target="_blank"
+                                        rel="noreferrer"
+                                        className="block text-xs text-cyan-300 underline decoration-cyan-500/50 underline-offset-2 hover:text-cyan-200"
+                                      >
+                                        [{source.source}] {source.title}
+                                      </a>
+                                    ))}
+                                  </div>
+                                ) : null}
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <p className="mt-3 text-sm text-slate-400">No verifiable claims were extracted.</p>
+                        )}
+                      </>
+                    )}
                   </div>
                 </div>
               )}

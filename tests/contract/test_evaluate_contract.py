@@ -7,6 +7,8 @@ from app.main import app
 class FakePipeline:
     async def evaluate(self, prompt: str, response: str, request_id: str):
         return {
+            "relevance_score": 0.81,
+            "alignment_note": "",
             "summary": {"risk_level": "medium", "confidence": 62.5},
             "detectors": {
                 "hallucination": {"flag": True, "score": 71.0, "reason": "Unsupported claims"},
@@ -34,7 +36,8 @@ def test_evaluate_contract():
     assert response.status_code == 200
     body = response.json()
 
-    assert set(body.keys()) == {"summary", "detectors", "meta"}
+    assert set(body.keys()) == {"relevance_score", "alignment_note", "summary", "detectors", "meta"}
+    assert 0 <= body["relevance_score"] <= 1
     assert body["summary"]["risk_level"] in {"low", "medium", "high"}
     assert 0 <= body["summary"]["confidence"] <= 100
     assert isinstance(body["detectors"]["hallucination"]["flag"], bool)

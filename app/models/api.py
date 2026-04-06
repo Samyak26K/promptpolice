@@ -30,10 +30,34 @@ class PIIDetectorOutput(BaseModel):
     samples_masked: list[str] = Field(default_factory=list)
 
 
+class FactCheckSource(BaseModel):
+    title: str
+    url: str
+    source: str = Field(..., pattern="^(wikipedia|news)$")
+
+
+class FactCheckClaim(BaseModel):
+    claim: str
+    verdict: str = Field(..., pattern="^(supported|contradicted|unclear)$")
+    confidence: float = Field(..., ge=0, le=1)
+    sources: list[FactCheckSource] = Field(default_factory=list)
+    explanation: str
+
+
+class FactCheckOutput(BaseModel):
+    score: float | None = Field(default=None, ge=0, le=1)
+    status: str = Field(..., pattern="^(verified|partially_verified|unverified|contradictory)$")
+    mode: str = Field(default="standard", pattern="^(standard|reference_only)$")
+    references: list[FactCheckSource] = Field(default_factory=list)
+    message: str = ""
+    claims: list[FactCheckClaim] = Field(default_factory=list)
+
+
 class Detectors(BaseModel):
     hallucination: HallucinationDetectorOutput
     toxicity: ToxicityDetectorOutput
     pii: PIIDetectorOutput
+    fact_check: FactCheckOutput | None = None
 
 
 class Meta(BaseModel):
@@ -43,6 +67,8 @@ class Meta(BaseModel):
 
 
 class EvaluateResponse(BaseModel):
+    relevance_score: float = Field(..., ge=0, le=1)
+    alignment_note: str = ""
     summary: Summary
     detectors: Detectors
     meta: Meta

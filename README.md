@@ -72,20 +72,71 @@ Confidence:
 
 confidence = 100 - risk_score
 
-## Run Backend
+## Manual Run Guide
 
-1. Create and activate virtual environment.
-2. Install dependencies: pip install -r requirements.txt
-3. Start API: uvicorn app.main:app --reload
-4. Open docs: http://127.0.0.1:8000/docs
+### Backend (FastAPI)
 
-## Run Frontend
+1. Open a terminal at the project root.
+2. Create the virtual environment:
 
-1. Set frontend API base URL via environment variable:
-   VITE_API_BASE_URL=http://localhost:8000
-2. Run frontend:
-   - npm install
-   - npm run dev
+```powershell
+python -m venv .venv
+```
+
+3. Activate it (PowerShell):
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+```
+
+4. Install dependencies:
+
+```powershell
+pip install -r requirements.txt
+```
+
+5. Ensure the single root `.env` file exists and includes the runtime settings:
+
+```env
+OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_MODEL=llama3:8b
+NEWS_API_KEY=your_newsapi_key
+VITE_API_BASE_URL=http://127.0.0.1:8001
+```
+
+6. Run the backend (recommended demo port 8001):
+
+```powershell
+python -m uvicorn app.main:app --host 127.0.0.1 --port 8001
+```
+
+7. Verify health and online mode:
+
+```powershell
+Invoke-RestMethod -Method GET -Uri "http://127.0.0.1:8001/health"
+```
+
+Expected fields:
+- `wikipedia: working`
+- `newsapi: working`
+- `mode: online`
+
+### Frontend (Vite + React)
+
+1. Open a second terminal in `frontend`.
+2. Install node modules:
+
+```powershell
+npm install
+```
+
+3. Run the frontend dev server:
+
+```powershell
+npm run dev
+```
+
+4. Open the URL shown by Vite (usually `http://127.0.0.1:5173` or `http://localhost:5173`).
 
 ## Tests
 
