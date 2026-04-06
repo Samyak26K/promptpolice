@@ -122,6 +122,41 @@
   color: rgba(148, 163, 184, 0.92);
 }
 
+.safenet-section-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.safenet-section-title-row .safenet-section-title {
+  margin-bottom: 0;
+}
+
+.safenet-nav-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.safenet-nav-button {
+  padding: 5px 8px;
+  font-size: 10px;
+}
+
+.safenet-nav-button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.safenet-nav-index {
+  min-width: 40px;
+  text-align: center;
+  font-size: 10px;
+  color: rgba(148, 163, 184, 0.92);
+}
+
 .safenet-badges {
   display: flex;
   flex-wrap: wrap;
@@ -203,6 +238,35 @@
   font-size: 12px;
   line-height: 1.55;
   white-space: pre-wrap;
+  color: rgba(226, 232, 240, 0.9);
+}
+
+.safenet-jailbreak-status {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  padding: 6px 10px;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.safenet-jailbreak-status[data-tone='safe'] {
+  border-color: rgba(22, 163, 74, 0.32);
+  background: rgba(22, 163, 74, 0.18);
+  color: #bbf7d0;
+}
+
+.safenet-jailbreak-status[data-tone='danger'] {
+  border-color: rgba(220, 38, 38, 0.32);
+  background: rgba(220, 38, 38, 0.18);
+  color: #fecaca;
+}
+
+.safenet-jailbreak-reason {
+  margin-top: 8px;
+  font-size: 12px;
+  line-height: 1.5;
   color: rgba(226, 232, 240, 0.9);
 }
 

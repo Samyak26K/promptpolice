@@ -4,6 +4,8 @@ const FLOATING_ROOT_ID = "safenet-floating-root";
 const FLOATING_Z_INDEX = "2147483646";
 const DEBOUNCE_MS = 1200;
 const STABILIZE_MS = 1000;
+const DASHBOARD_BASE_URL = "http://localhost:5173/";
+const DASHBOARD_TRANSFER_PARAM = "safenetPayload";
 
 const PLATFORM_STRATEGIES = {
   claude: {
@@ -90,6 +92,9 @@ let overlayElements = null;
 let currentSnapshot = null;
 let currentResult = null;
 let currentError = null;
+let conversationHistory = [];
+let currentHistoryIndex = -1;
+let historyAnalysisInFlightIndex = -1;
 let collapsed = false;
 let dragState = null;
 let mutationObserver = null;
@@ -590,6 +595,7 @@ function ensureOverlayRoot() {
           <div class="safenet-subtitle" data-status>Waiting for conversation</div>
         </div>
         <div class="safenet-header-actions">
+          <button type="button" class="safenet-icon-button" data-dashboard-btn title="Open dashboard">Dashboard</button>
           <button type="button" class="safenet-icon-button" data-analyze-btn title="Analyze now">Analyze</button>
           <button type="button" class="safenet-icon-button" data-toggle-btn title="Expand or collapse">+</button>
           <button type="button" class="safenet-icon-button" data-close-btn title="Hide overlay">×</button>
@@ -625,7 +631,20 @@ function ensureOverlayRoot() {
         </div>
 
         <div class="safenet-section">
-          <div class="safenet-section-title">Latest Pair</div>
+          <div class="safenet-section-title">Jailbreak Detection</div>
+          <div class="safenet-jailbreak-status" data-jailbreak-status data-tone="safe">Safe</div>
+          <div class="safenet-jailbreak-reason" data-jailbreak-reason>No known jailbreak patterns matched.</div>
+        </div>
+
+        <div class="safenet-section">
+          <div class="safenet-section-title-row">
+            <div class="safenet-section-title">Latest Pair</div>
+            <div class="safenet-nav-controls">
+              <button type="button" class="safenet-icon-button safenet-nav-button" data-prev-btn title="Previous conversation">Previous</button>
+              <span class="safenet-nav-index" data-history-index>0/0</span>
+              <button type="button" class="safenet-icon-button safenet-nav-button" data-next-btn title="Next conversation">Next</button>
+            </div>
+          </div>
           <div class="safenet-snapshot">
             <div class="safenet-snapshot-label">Prompt</div>
             <div class="safenet-snapshot-text" data-prompt>Waiting for a prompt...</div>
@@ -670,10 +689,16 @@ function ensureOverlayRoot() {
     relevance: overlayShadow.querySelector("[data-relevance]"),
     factCheck: overlayShadow.querySelector("[data-fact-check]"),
     details: overlayShadow.querySelector("[data-details]"),
+    dashboardBtn: overlayShadow.querySelector("[data-dashboard-btn]"),
+    prevBtn: overlayShadow.querySelector("[data-prev-btn]"),
+    nextBtn: overlayShadow.querySelector("[data-next-btn]"),
+    historyIndex: overlayShadow.querySelector("[data-history-index]"),
     analyzeBtn: overlayShadow.querySelector("[data-analyze-btn]"),
     toggleBtn: overlayShadow.querySelector("[data-toggle-btn]"),
     closeBtn: overlayShadow.querySelector("[data-close-btn]"),
     dragHandle: overlayShadow.querySelector("[data-drag-handle]"),
+    jailbreakStatus: overlayShadow.querySelector("[data-jailbreak-status]"),
+    jailbreakReason: overlayShadow.querySelector("[data-jailbreak-reason]"),
     flags: {
       hallucination: overlayShadow.querySelector("[data-flag='hallucination']"),
       toxicity: overlayShadow.querySelector("[data-flag='toxicity']"),
@@ -683,8 +708,23 @@ function ensureOverlayRoot() {
 
   overlayElements.toggleBtn.addEventListener("click", toggleOverlay);
   overlayElements.closeBtn.addEventListener("click", hideOverlay);
+  overlayElements.dashboardBtn?.addEventListener("click", () => {
+    const dashboardUrl = buildDashboardUrlWithSnapshot(currentSnapshot);
+    window.open(dashboardUrl, "_blank", "noopener,noreferrer");
+  });
+  overlayElements.prevBtn?.addEventListener("click", () => {
+    navigateHistory(-1).catch(() => {
+      // Navigation errors are surfaced in the overlay state.
+    });
+  });
+  overlayElements.nextBtn?.addEventListener("click", () => {
+    navigateHistory(1).catch(() => {
+      // Navigation errors are surfaced in the overlay state.
+    });
+  });
   overlayElements.analyzeBtn.addEventListener("click", requestAnalysisNow);
   overlayElements.dragHandle.addEventListener("pointerdown", beginDrag);
+  updateHistoryControls();
 
   return host;
 }
@@ -779,6 +819,25 @@ function setFlag(element, label, active, tone) {
   element.dataset.tone = tone || (active ? "danger" : "neutral");
 }
 
+function detectJailbreak(prompt, response) {
+  const text = `${String(prompt || "")}\n${String(response || "")}`.toLowerCase();
+  const rules = [
+    { pattern: /ignore\s+previous\s+instructions?/i, reason: "Matched pattern: ignore previous instructions" },
+    { pattern: /\bbypass\b/i, reason: "Matched pattern: bypass" },
+    { pattern: /\bact\s+as\b/i, reason: "Matched pattern: act as" },
+    { pattern: /\bjailbreak\b/i, reason: "Matched pattern: jailbreak" },
+    { pattern: /\bdo\s+anything\s+now\b/i, reason: "Matched pattern: do anything now" },
+  ];
+
+  for (const rule of rules) {
+    if (rule.pattern.test(text)) {
+      return { detected: true, reason: rule.reason };
+    }
+  }
+
+  return { detected: false, reason: "No known jailbreak patterns matched." };
+}
+
 function formatConfidence(value) {
   if (value === null || value === undefined || Number.isNaN(Number(value))) {
     return "—";
@@ -804,6 +863,148 @@ function getRiskTone(riskLevel) {
   return "danger";
 }
 
+function normalizeSnapshotForHistory(snapshot) {
+  if (!snapshot) {
+    return null;
+  }
+
+  const prompt = quickCleanText(snapshot.prompt || "");
+  const response = quickCleanText(snapshot.response || "");
+  if (!prompt && !response) {
+    return null;
+  }
+
+  return {
+    ...snapshot,
+    prompt,
+    response,
+    signature: String(snapshot.signature || `${prompt}\n${response}`),
+  };
+}
+
+function updateHistoryControls() {
+  if (!overlayElements?.prevBtn || !overlayElements?.nextBtn || !overlayElements?.historyIndex) {
+    return;
+  }
+
+  const total = conversationHistory.length;
+  const isAtStart = currentHistoryIndex <= 0;
+  const isAtEnd = currentHistoryIndex >= total - 1;
+
+  overlayElements.prevBtn.disabled = total <= 1 || isAtStart;
+  overlayElements.nextBtn.disabled = total <= 1 || isAtEnd;
+  overlayElements.historyIndex.textContent = total > 0
+    ? `${currentHistoryIndex + 1}/${total}`
+    : "0/0";
+  overlayElements.body.hidden = collapsed;
+}
+
+function addSnapshotToHistory(snapshot, result, options = {}) {
+  const normalizedSnapshot = normalizeSnapshotForHistory(snapshot);
+  if (!normalizedSnapshot) {
+    updateHistoryControls();
+    return;
+  }
+
+  const { selectLatest = true } = options;
+  const existingIndex = conversationHistory.findIndex((item) => item.snapshot.signature === normalizedSnapshot.signature);
+  const existingItem = existingIndex >= 0 ? conversationHistory[existingIndex] : null;
+  const resolvedResult = result !== undefined ? result : (existingItem?.result ?? null);
+
+  const historyItem = {
+    snapshot: normalizedSnapshot,
+    result: resolvedResult,
+  };
+
+  if (existingIndex >= 0) {
+    conversationHistory[existingIndex] = historyItem;
+    if (selectLatest) {
+      currentHistoryIndex = existingIndex;
+    }
+  } else {
+    conversationHistory.push(historyItem);
+    if (selectLatest || currentHistoryIndex < 0) {
+      currentHistoryIndex = conversationHistory.length - 1;
+    }
+  }
+
+  updateHistoryControls();
+}
+
+function buildDashboardUrlWithSnapshot(snapshot) {
+  const resolved = snapshot?.snapshot || snapshot;
+  const normalizedSnapshot = normalizeSnapshotForHistory(resolved);
+  const payload = {
+    prompt: normalizedSnapshot?.prompt || "",
+    response: normalizedSnapshot?.response || "",
+    timestamp: Date.now(),
+  };
+
+  const url = new URL(DASHBOARD_BASE_URL);
+  url.searchParams.set(DASHBOARD_TRANSFER_PARAM, JSON.stringify(payload));
+  return url.toString();
+}
+
+async function navigateHistory(direction) {
+  const targetIndex = currentHistoryIndex + direction;
+  if (targetIndex < 0 || targetIndex >= conversationHistory.length) {
+    updateHistoryControls();
+    return;
+  }
+
+  const historyItem = conversationHistory[targetIndex];
+  currentHistoryIndex = targetIndex;
+  currentSnapshot = historyItem.snapshot;
+  currentResult = historyItem.result;
+  currentError = null;
+
+  showOverlay();
+  if (overlayElements?.status) {
+    overlayElements.status.textContent = "Viewing previous analysis";
+  }
+  renderState();
+  updateHistoryControls();
+
+  if (historyItem.result || historyAnalysisInFlightIndex === targetIndex) {
+    return;
+  }
+
+  historyAnalysisInFlightIndex = targetIndex;
+  if (overlayElements?.status) {
+    overlayElements.status.textContent = "Analyzing previous prompt...";
+  }
+
+  const response = await sendMessage({
+    type: "SAFENET_REQUEST_ANALYSIS",
+    snapshot: {
+      prompt: currentSnapshot?.prompt || "",
+      response: currentSnapshot?.response || "",
+    },
+  });
+
+  if (historyAnalysisInFlightIndex !== targetIndex || currentHistoryIndex !== targetIndex) {
+    historyAnalysisInFlightIndex = -1;
+    return;
+  }
+
+  if (!response?.ok) {
+    currentError = response?.error || { code: "REQUEST_FAILED", message: "Unable to analyze this chat." };
+    renderState();
+    historyAnalysisInFlightIndex = -1;
+    return;
+  }
+
+  const analyzedResult = response.result || null;
+  conversationHistory[targetIndex].result = analyzedResult;
+  currentResult = analyzedResult;
+  currentError = response.error || null;
+  if (overlayElements?.status) {
+    overlayElements.status.textContent = analyzedResult ? "Viewing previous analysis" : "No analysis available for this entry";
+  }
+  renderState();
+  historyAnalysisInFlightIndex = -1;
+}
+
 function renderSnapshot(snapshot) {
   if (!overlayElements) {
     return;
@@ -826,6 +1027,13 @@ function renderWaiting(message) {
   setFlag(overlayElements.flags.hallucination, "Hallucination", false, "neutral");
   setFlag(overlayElements.flags.toxicity, "Toxicity", false, "neutral");
   setFlag(overlayElements.flags.pii, "PII", false, "neutral");
+  if (overlayElements?.jailbreakStatus) {
+    overlayElements.jailbreakStatus.textContent = "Safe";
+    overlayElements.jailbreakStatus.dataset.tone = "safe";
+  }
+  if (overlayElements?.jailbreakReason) {
+    overlayElements.jailbreakReason.textContent = "No known jailbreak patterns matched.";
+  }
 }
 
 function renderError(error) {
@@ -838,6 +1046,13 @@ function renderError(error) {
   overlayElements.relevance.textContent = "—";
   overlayElements.factCheck.textContent = "—";
   overlayElements.details.textContent = `${error?.code || "REQUEST_FAILED"}: ${error?.message || "Unable to analyze this chat."}`;
+  if (overlayElements?.jailbreakStatus) {
+    overlayElements.jailbreakStatus.textContent = "Safe";
+    overlayElements.jailbreakStatus.dataset.tone = "safe";
+  }
+  if (overlayElements?.jailbreakReason) {
+    overlayElements.jailbreakReason.textContent = "No known jailbreak patterns matched.";
+  }
 }
 
 function renderResult(result) {
@@ -869,6 +1084,15 @@ function renderResult(result) {
   setFlag(overlayElements.flags.toxicity, "Toxicity", toxicityFlag, toxicityFlag ? "warn" : "neutral");
   setFlag(overlayElements.flags.pii, "PII", piiFlag, piiFlag ? "danger" : "neutral");
 
+  const jailbreak = detectJailbreak(currentSnapshot?.prompt, currentSnapshot?.response);
+  if (overlayElements?.jailbreakStatus) {
+    overlayElements.jailbreakStatus.textContent = jailbreak.detected ? "Jailbreak Detected" : "Safe";
+    overlayElements.jailbreakStatus.dataset.tone = jailbreak.detected ? "danger" : "safe";
+  }
+  if (overlayElements?.jailbreakReason) {
+    overlayElements.jailbreakReason.textContent = jailbreak.reason;
+  }
+
   const lines = [];
   lines.push("Confidence reflects safety and reliability. Relevance reflects alignment with the user query.");
   if (result?.detectors?.hallucination?.reason) {
@@ -898,7 +1122,11 @@ function renderState() {
   }
 
   if (!currentResult) {
-    renderWaiting("Waiting for conversation data from a supported LLM chat.");
+    const isViewingHistory = currentHistoryIndex < conversationHistory.length - 1;
+    const message = isViewingHistory
+      ? "No analysis available for this entry"
+      : "Waiting for conversation data from a supported LLM chat.";
+    renderWaiting(message);
     return;
   }
 
@@ -980,6 +1208,7 @@ async function requestAnalysisNow() {
   currentSnapshot = response.snapshot || currentSnapshot;
   currentResult = response.result || null;
   currentError = response.error || null;
+  addSnapshotToHistory(currentSnapshot, currentResult);
   overlayElements.status.textContent = currentResult ? "Live analysis updated" : "Waiting for complete chat content";
   renderState();
 }
@@ -994,6 +1223,7 @@ function scheduleExtraction() {
     const snapshot = buildConversationSnapshot();
     if (!snapshot || (!snapshot.prompt && !snapshot.response && snapshot.usersFound === 0 && snapshot.assistantsFound === 0)) {
       currentSnapshot = snapshot;
+      updateHistoryControls();
       return;
     }
 
@@ -1022,6 +1252,7 @@ function scheduleExtraction() {
 
     lastSignature = snapshot.signature;
     currentSnapshot = snapshot;
+    addSnapshotToHistory(currentSnapshot);
   }, DEBOUNCE_MS);
 }
 
@@ -1533,6 +1764,7 @@ async function bootstrap() {
 
   ensureAnalyzeFab();
   currentSnapshot = buildConversationSnapshot();
+  addSnapshotToHistory(currentSnapshot);
 
   mutationObserver = new MutationObserver(() => {
     scheduleExtraction();
@@ -1560,6 +1792,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     const snapshot = buildConversationSnapshot();
     currentSnapshot = snapshot;
+    addSnapshotToHistory(currentSnapshot);
     sendResponse(snapshot);
     return false;
   }
@@ -1568,6 +1801,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     currentSnapshot = message.payload?.snapshot || currentSnapshot;
     currentResult = message.payload?.result || null;
     currentError = message.payload?.error || null;
+    addSnapshotToHistory(currentSnapshot, currentResult);
     overlayElements.status.textContent = currentError ? "Analysis error" : "Live analysis updated";
     renderState();
     sendResponse({ ok: true });
@@ -1576,7 +1810,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message?.type === "SAFENET_TAB_STATUS") {
     currentSnapshot = message.payload?.snapshot || currentSnapshot;
-    currentResult = null;
+    addSnapshotToHistory(currentSnapshot);
     currentError = null;
     overlayElements.status.textContent = message.payload?.message || "Waiting for conversation";
     renderState();

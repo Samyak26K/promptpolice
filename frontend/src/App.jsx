@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { evaluateOutput } from "./api/apiClient";
 
 const SAMPLE_PROMPT = "Summarize GDPR data retention rules for a product team.";
@@ -121,6 +121,53 @@ function ResultCard({ title, children }) {
   );
 }
 
+function detectJailbreak(promptText, responseText) {
+  const text = `${String(promptText || "")}\n${String(responseText || "")}`.toLowerCase();
+  const rules = [
+    { pattern: /ignore\s+previous\s+instructions?/i, reason: "Matched pattern: ignore previous instructions" },
+    { pattern: /\bbypass\b/i, reason: "Matched pattern: bypass" },
+    { pattern: /\bact\s+as\b/i, reason: "Matched pattern: act as" },
+    { pattern: /\bjailbreak\b/i, reason: "Matched pattern: jailbreak" },
+    { pattern: /\bdo\s+anything\s+now\b/i, reason: "Matched pattern: do anything now" },
+  ];
+
+  for (const rule of rules) {
+    if (rule.pattern.test(text)) {
+      return { detected: true, reason: rule.reason };
+    }
+  }
+
+  return { detected: false, reason: "No known jailbreak patterns matched." };
+}
+
+function readExtensionTransferPayload() {
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const payloadText = params.get("safenetPayload");
+    if (!payloadText) {
+      return null;
+    }
+
+    const payload = JSON.parse(payloadText);
+    const prompt = String(payload?.prompt || "").trim();
+    const response = String(payload?.response || "").trim();
+    const timestamp = Number(payload?.timestamp || Date.now());
+
+    params.delete("safenetPayload");
+    const nextSearch = params.toString();
+    const nextUrl = `${window.location.pathname}${nextSearch ? `?${nextSearch}` : ""}${window.location.hash}`;
+    window.history.replaceState({}, "", nextUrl);
+
+    if (!prompt && !response) {
+      return null;
+    }
+
+    return { prompt, response, timestamp };
+  } catch {
+    return null;
+  }
+}
+
 export default function App() {
   const [prompt, setPrompt] = useState("");
   const [response, setResponse] = useState("");
@@ -131,6 +178,18 @@ export default function App() {
   const currentRisk = useMemo(() => riskMeta(result?.risk || "Low"), [result]);
   const currentFactStatus = useMemo(() => factStatusMeta(result?.factCheck?.status || "unverified"), [result]);
   const relevanceNote = result?.alignmentNote || "";
+
+  useEffect(() => {
+    const transferredPayload = readExtensionTransferPayload();
+    if (!transferredPayload) {
+      return;
+    }
+
+    setPrompt(transferredPayload.prompt);
+    setResponse(transferredPayload.response);
+    setResult(null);
+    setError("");
+  }, []);
 
   const loadSample = () => {
     setPrompt(SAMPLE_PROMPT);
@@ -168,6 +227,7 @@ export default function App() {
         : [];
       const factMessage = String(rawFactCheck?.message || "No verifiable facts detected. Here are some relevant sources you can explore:");
       const alignmentNote = String(data?.alignment_note || (relevanceScore < 0.4 ? "This response has low alignment with the user query" : ""));
+      const jailbreak = detectJailbreak(prompt, response);
 
       const explanation = [
         "Confidence score reflects safety and reliability, while relevance score reflects alignment with the user query.",
@@ -205,6 +265,7 @@ export default function App() {
           toxicity,
           pii,
         },
+        jailbreak,
         explanation,
       });
     } catch (requestError) {
@@ -352,6 +413,14 @@ export default function App() {
                       <Badge icon={<WarningIcon />} label="Toxicity" active={result.flags.toxicity} />
                       <Badge icon={<ShieldIcon />} label="PII" active={result.flags.pii} />
                     </div>
+                  </div>
+
+                  <div className={"rounded-2xl border p-4 " + (result.jailbreak?.detected ? "border-rose-500/30 bg-rose-500/10" : "border-emerald-500/30 bg-emerald-500/10")}>
+                    <p className="text-sm font-semibold text-white">Jailbreak Detection</p>
+                    <p className={"mt-2 inline-flex rounded-full border px-3 py-1 text-xs font-semibold " + (result.jailbreak?.detected ? "border-rose-500/40 text-rose-300" : "border-emerald-500/40 text-emerald-300")}>
+                      {result.jailbreak?.detected ? "Jailbreak Detected" : "Safe"}
+                    </p>
+                    <p className="mt-2 text-sm text-slate-300">{result.jailbreak?.reason || "No known jailbreak patterns matched."}</p>
                   </div>
 
                   <div className="rounded-2xl border border-white/10 bg-slate-900/60 p-4">
