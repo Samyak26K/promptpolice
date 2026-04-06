@@ -11,6 +11,7 @@ from app.models.api import (
     FactCheckSource,
     HallucinationDetectorOutput,
     Meta,
+    PolicyDefinition,
     PIIDetectorOutput,
     Summary,
     ToxicityDetectorOutput,
@@ -21,6 +22,7 @@ from app.services.detectors.models import HallucinationResult
 from app.services.detectors.pii_detector import PIIDetector
 from app.services.detectors.relevance import compute_relevance_score
 from app.services.detectors.toxicity_detector import ToxicityDetector
+from app.services.policy_engine import evaluate_policies
 
 
 class EvaluationPipeline:
@@ -38,7 +40,13 @@ class EvaluationPipeline:
         self.fact_checker = fact_checker
         self.relevance_scorer = relevance_scorer
 
-    async def evaluate(self, prompt: str, response: str, request_id: str) -> EvaluateResponse:
+    async def evaluate(
+        self,
+        prompt: str,
+        response: str,
+        request_id: str,
+        policies: list[PolicyDefinition] | None = None,
+    ) -> EvaluateResponse:
         start = time.perf_counter()
 
         normalized_prompt = self._normalize(prompt)
@@ -99,6 +107,7 @@ class EvaluationPipeline:
         )
         print("[RISK]", risk_level)
         alignment_note = self._build_alignment_note(relevance_score)
+        policy_results = evaluate_policies(normalized_prompt, normalized_response, policies)
 
         latency_ms = int((time.perf_counter() - start) * 1000)
         return EvaluateResponse(
@@ -159,6 +168,7 @@ class EvaluationPipeline:
                 ),
             ),
             meta=Meta(latency_ms=latency_ms, version="v1", request_id=request_id),
+            policy_results=policy_results,
         )
 
     def _normalize(self, text: str) -> str:

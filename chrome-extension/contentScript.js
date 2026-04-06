@@ -6,6 +6,9 @@ const DEBOUNCE_MS = 1200;
 const STABILIZE_MS = 1000;
 const DASHBOARD_BASE_URL = "http://localhost:5173/";
 const DASHBOARD_TRANSFER_PARAM = "safenetPayload";
+const DASHBOARD_LOGS_PARAM = "safenetAuditLogs";
+const AUDIT_LOG_KEY = "safenet_audit_logs";
+const AUDIT_LOG_LIMIT = 50;
 
 const PLATFORM_STRATEGIES = {
   claude: {
@@ -709,8 +712,13 @@ function ensureOverlayRoot() {
   overlayElements.toggleBtn.addEventListener("click", toggleOverlay);
   overlayElements.closeBtn.addEventListener("click", hideOverlay);
   overlayElements.dashboardBtn?.addEventListener("click", () => {
-    const dashboardUrl = buildDashboardUrlWithSnapshot(currentSnapshot);
-    window.open(dashboardUrl, "_blank", "noopener,noreferrer");
+    buildDashboardUrlWithSnapshot(currentSnapshot)
+      .then((dashboardUrl) => {
+        window.open(dashboardUrl, "_blank", "noopener,noreferrer");
+      })
+      .catch(() => {
+        window.open(DASHBOARD_BASE_URL, "_blank", "noopener,noreferrer");
+      });
   });
   overlayElements.prevBtn?.addEventListener("click", () => {
     navigateHistory(-1).catch(() => {
@@ -882,6 +890,39 @@ function normalizeSnapshotForHistory(snapshot) {
   };
 }
 
+function appendAuditLog(snapshot, result) {
+  const prompt = quickCleanText(snapshot?.prompt || "");
+  const response = quickCleanText(snapshot?.response || "");
+  if (!prompt && !response) {
+    return;
+  }
+
+  const entry = {
+    prompt,
+    response,
+    result: result || null,
+    timestamp: Date.now(),
+    platform: String(snapshot?.platform || detectPlatform().name || "generic"),
+  };
+
+  if (!globalThis.chrome?.storage?.local) {
+    return;
+  }
+
+  chrome.storage.local.get([AUDIT_LOG_KEY], (stored) => {
+    if (chrome.runtime?.lastError) {
+      return;
+    }
+
+    const existingLogs = Array.isArray(stored?.[AUDIT_LOG_KEY]) ? stored[AUDIT_LOG_KEY] : [];
+    const nextLogs = [entry, ...existingLogs].slice(0, AUDIT_LOG_LIMIT);
+
+    chrome.storage.local.set({ [AUDIT_LOG_KEY]: nextLogs }, () => {
+      void chrome.runtime?.lastError;
+    });
+  });
+}
+
 function updateHistoryControls() {
   if (!overlayElements?.prevBtn || !overlayElements?.nextBtn || !overlayElements?.historyIndex) {
     return;
@@ -931,7 +972,26 @@ function addSnapshotToHistory(snapshot, result, options = {}) {
   updateHistoryControls();
 }
 
-function buildDashboardUrlWithSnapshot(snapshot) {
+function getAuditLogsForDashboard() {
+  return new Promise((resolve) => {
+    if (!globalThis.chrome?.storage?.local) {
+      resolve([]);
+      return;
+    }
+
+    chrome.storage.local.get([AUDIT_LOG_KEY], (stored) => {
+      if (chrome.runtime?.lastError) {
+        resolve([]);
+        return;
+      }
+
+      const logs = Array.isArray(stored?.[AUDIT_LOG_KEY]) ? stored[AUDIT_LOG_KEY] : [];
+      resolve(logs.slice(0, AUDIT_LOG_LIMIT));
+    });
+  });
+}
+
+async function buildDashboardUrlWithSnapshot(snapshot) {
   const resolved = snapshot?.snapshot || snapshot;
   const normalizedSnapshot = normalizeSnapshotForHistory(resolved);
   const payload = {
@@ -939,9 +999,11 @@ function buildDashboardUrlWithSnapshot(snapshot) {
     response: normalizedSnapshot?.response || "",
     timestamp: Date.now(),
   };
+  const logs = await getAuditLogsForDashboard();
 
   const url = new URL(DASHBOARD_BASE_URL);
   url.searchParams.set(DASHBOARD_TRANSFER_PARAM, JSON.stringify(payload));
+  url.searchParams.set(DASHBOARD_LOGS_PARAM, JSON.stringify(logs));
   return url.toString();
 }
 
@@ -1802,6 +1864,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     currentResult = message.payload?.result || null;
     currentError = message.payload?.error || null;
     addSnapshotToHistory(currentSnapshot, currentResult);
+    appendAuditLog(currentSnapshot, currentResult);
     overlayElements.status.textContent = currentError ? "Analysis error" : "Live analysis updated";
     renderState();
     sendResponse({ ok: true });

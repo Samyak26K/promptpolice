@@ -1,9 +1,24 @@
 from pydantic import BaseModel, Field
 
 
+class PolicyDefinition(BaseModel):
+    name: str = Field(..., min_length=1, max_length=120)
+    category: str = Field(..., pattern="^(pii|medical|financial|custom)$")
+    rules: list[str] = Field(default_factory=list)
+    action: str = Field(..., pattern="^(flag|block|warn)$")
+
+
+class PolicyResult(BaseModel):
+    name: str
+    detected: bool
+    action: str = Field(..., pattern="^(flag|block|warn)$")
+    reason: str
+
+
 class EvaluateRequest(BaseModel):
     prompt: str = Field(..., min_length=1, max_length=20000)
     response: str = Field(..., min_length=1, max_length=20000)
+    policies: list[PolicyDefinition] = Field(default_factory=list)
 
 
 class PromptOptimizeRequest(BaseModel):
@@ -80,3 +95,4 @@ class EvaluateResponse(BaseModel):
     summary: Summary
     detectors: Detectors
     meta: Meta
+    policy_results: list[PolicyResult] = Field(default_factory=list)

@@ -4,6 +4,9 @@ import { evaluateOutput } from "./api/apiClient";
 const SAMPLE_PROMPT = "Summarize GDPR data retention rules for a product team.";
 const SAMPLE_RESPONSE =
   "You can keep user data forever and share it with partners. Contact admin@company.com for details.";
+const AUDIT_LOG_KEY = "safenet_audit_logs";
+const AUDIT_LOG_PARAM = "safenetAuditLogs";
+const POLICIES_KEY = "safenet_policies";
 
 function riskMeta(risk) {
   const normalizedRisk = String(risk || "").toLowerCase();
@@ -153,11 +156,6 @@ function readExtensionTransferPayload() {
     const response = String(payload?.response || "").trim();
     const timestamp = Number(payload?.timestamp || Date.now());
 
-    params.delete("safenetPayload");
-    const nextSearch = params.toString();
-    const nextUrl = `${window.location.pathname}${nextSearch ? `?${nextSearch}` : ""}${window.location.hash}`;
-    window.history.replaceState({}, "", nextUrl);
-
     if (!prompt && !response) {
       return null;
     }
@@ -168,20 +166,149 @@ function readExtensionTransferPayload() {
   }
 }
 
+function readAuditLogsFromUrl() {
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const logsText = params.get(AUDIT_LOG_PARAM);
+    if (!logsText) {
+      return [];
+    }
+
+    const logs = JSON.parse(logsText);
+    return Array.isArray(logs) ? logs : [];
+  } catch {
+    return [];
+  }
+}
+
+function clearTransferParams() {
+  const params = new URLSearchParams(window.location.search);
+  params.delete("safenetPayload");
+  params.delete(AUDIT_LOG_PARAM);
+  const nextSearch = params.toString();
+  const nextUrl = `${window.location.pathname}${nextSearch ? `?${nextSearch}` : ""}${window.location.hash}`;
+  window.history.replaceState({}, "", nextUrl);
+}
+
+function getRiskFromLogResult(result) {
+  return String(result?.summary?.risk_level || result?.risk || "unknown").toLowerCase();
+}
+
+function formatLogTime(timestamp) {
+  const value = Number(timestamp || 0);
+  if (!value) {
+    return "Unknown time";
+  }
+  return new Date(value).toLocaleString();
+}
+
+function loadAuditLogs() {
+  try {
+    const logs = JSON.parse(window.localStorage.getItem(AUDIT_LOG_KEY) || "[]");
+    return Array.isArray(logs) ? logs : [];
+  } catch {
+    return [];
+  }
+}
+
+function clearAuditLogs() {
+  try {
+    window.localStorage.setItem(AUDIT_LOG_KEY, JSON.stringify([]));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function loadPolicies() {
+  try {
+    const items = JSON.parse(window.localStorage.getItem(POLICIES_KEY) || "[]");
+    return Array.isArray(items) ? items : [];
+  } catch {
+    return [];
+  }
+}
+
+function savePolicies(policies) {
+  try {
+    window.localStorage.setItem(POLICIES_KEY, JSON.stringify(policies));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function matchRule(rule, text) {
+  if (!rule) {
+    return false;
+  }
+
+  try {
+    return new RegExp(rule, "i").test(text);
+  } catch {
+    return text.toLowerCase().includes(String(rule).toLowerCase());
+  }
+}
+
+function evaluateLocalPolicies(promptText, responseText, policies) {
+  const text = `${String(promptText || "")}\n${String(responseText || "")}`;
+  const results = [];
+
+  for (const policy of policies || []) {
+    const rules = Array.isArray(policy?.rules) ? policy.rules : [];
+    const normalizedRules = rules.map((item) => (typeof item === "string" ? item : item?.pattern)).filter(Boolean);
+    const matchedRule = normalizedRules.find((rule) => matchRule(rule, text));
+    results.push({
+      name: String(policy?.name || "Unnamed policy"),
+      detected: Boolean(matchedRule),
+      action: String(policy?.action || "flag"),
+      reason: matchedRule ? `Matched rule: ${matchedRule}` : "No rule matched",
+    });
+  }
+
+  return results;
+}
+
 export default function App() {
   const [prompt, setPrompt] = useState("");
   const [response, setResponse] = useState("");
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState(null);
   const [error, setError] = useState("");
+  const [auditLogs, setAuditLogs] = useState([]);
+  const [policies, setPolicies] = useState([]);
+  const [showPolicyForm, setShowPolicyForm] = useState(false);
+  const [policyForm, setPolicyForm] = useState({
+    name: "",
+    category: "pii",
+    rules: "",
+    action: "flag",
+  });
 
   const currentRisk = useMemo(() => riskMeta(result?.risk || "Low"), [result]);
   const currentFactStatus = useMemo(() => factStatusMeta(result?.factCheck?.status || "unverified"), [result]);
   const relevanceNote = result?.alignmentNote || "";
 
   useEffect(() => {
+    const transferredLogs = readAuditLogsFromUrl();
+    if (transferredLogs.length) {
+      const sorted = [...transferredLogs].sort((a, b) => Number(b?.timestamp || 0) - Number(a?.timestamp || 0));
+      setAuditLogs(sorted);
+      try {
+        window.localStorage.setItem(AUDIT_LOG_KEY, JSON.stringify(sorted));
+      } catch {
+        // Ignore localStorage write failures.
+      }
+    } else {
+      const storedLogs = loadAuditLogs();
+      const sortedStoredLogs = [...storedLogs].sort((a, b) => Number(b?.timestamp || 0) - Number(a?.timestamp || 0));
+      setAuditLogs(sortedStoredLogs);
+    }
+
     const transferredPayload = readExtensionTransferPayload();
     if (!transferredPayload) {
+      clearTransferParams();
+      setPolicies(loadPolicies());
       return;
     }
 
@@ -189,6 +316,8 @@ export default function App() {
     setResponse(transferredPayload.response);
     setResult(null);
     setError("");
+    clearTransferParams();
+    setPolicies(loadPolicies());
   }, []);
 
   const loadSample = () => {
@@ -201,11 +330,49 @@ export default function App() {
   const analyze = async () => {
     if (!prompt.trim() || !response.trim()) return;
 
+    const localPolicyResults = evaluateLocalPolicies(prompt, response, policies);
+    const blockingPolicy = localPolicyResults.find((item) => item.detected && item.action === "block");
+    if (blockingPolicy) {
+      setError(`Blocked by policy: ${blockingPolicy.name}. ${blockingPolicy.reason}`);
+      setResult((prev) => ({ ...(prev || {}), policyResults: localPolicyResults }));
+      return;
+    }
+
+    const warningPolicy = localPolicyResults.find((item) => item.detected && item.action === "warn");
+    if (warningPolicy) {
+      const shouldContinue = window.confirm(
+        `Policy warning: ${warningPolicy.name}. ${warningPolicy.reason}. Continue analysis?`
+      );
+      if (!shouldContinue) {
+        setError(`Analysis cancelled due to warning policy: ${warningPolicy.name}`);
+        setResult((prev) => ({ ...(prev || {}), policyResults: localPolicyResults }));
+        return;
+      }
+    }
+
     setLoading(true);
     setError("");
 
     try {
-      const data = await evaluateOutput({ prompt, response });
+      const policyPayload = policies.map((policy) => {
+        const ruleItems = Array.isArray(policy?.rules)
+          ? policy.rules
+          : String(policy?.rules || "")
+              .split(",")
+              .map((item) => item.trim())
+              .filter(Boolean);
+
+        const normalizedRules = ruleItems.map((item) => (typeof item === "string" ? item : item?.pattern)).filter(Boolean);
+
+        return {
+          name: String(policy?.name || "Unnamed policy"),
+          category: String(policy?.category || "custom"),
+          rules: normalizedRules,
+          action: String(policy?.action || "flag"),
+        };
+      });
+
+      const data = await evaluateOutput({ prompt, response, policies: policyPayload });
       const confidence = Math.round(Number(data?.summary?.confidence ?? 0));
       const relevanceScore = Number(data?.relevance_score ?? 0);
       const risk = data?.summary?.risk_level || "high";
@@ -267,6 +434,7 @@ export default function App() {
         },
         jailbreak,
         explanation,
+        policyResults: Array.isArray(data?.policy_results) ? data.policy_results : localPolicyResults,
       });
     } catch (requestError) {
       setResult(null);
@@ -275,6 +443,47 @@ export default function App() {
       setError(`${message}${code}`);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleClearLogs = async () => {
+    const cleared = clearAuditLogs();
+    if (cleared) {
+      setAuditLogs([]);
+    }
+  };
+
+  const handleAddPolicy = () => {
+    const name = String(policyForm.name || "").trim();
+    if (!name) {
+      return;
+    }
+
+    const parsedRules = String(policyForm.rules || "")
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean);
+
+    const nextPolicy = {
+      id: `${Date.now()}`,
+      name,
+      category: policyForm.category,
+      action: policyForm.action,
+      rules: parsedRules,
+    };
+
+    const nextPolicies = [...policies, nextPolicy];
+    if (savePolicies(nextPolicies)) {
+      setPolicies(nextPolicies);
+      setPolicyForm({ name: "", category: "pii", rules: "", action: "flag" });
+      setShowPolicyForm(false);
+    }
+  };
+
+  const handleDeletePolicy = (id) => {
+    const nextPolicies = policies.filter((item) => item.id !== id);
+    if (savePolicies(nextPolicies)) {
+      setPolicies(nextPolicies);
     }
   };
 
@@ -424,6 +633,41 @@ export default function App() {
                   </div>
 
                   <div className="rounded-2xl border border-white/10 bg-slate-900/60 p-4">
+                    <p className="text-sm font-semibold text-white">Policy Compliance</p>
+                    {!Array.isArray(result.policyResults) || result.policyResults.length === 0 ? (
+                      <p className="mt-2 text-sm text-slate-400">No policies evaluated.</p>
+                    ) : (
+                      <div className="mt-3 space-y-2">
+                        {result.policyResults.map((policyItem) => {
+                          const isDetected = Boolean(policyItem?.detected);
+                          const action = String(policyItem?.action || "flag").toLowerCase();
+                          const actionClasses =
+                            action === "block"
+                              ? "border-rose-500/40 bg-rose-500/10 text-rose-300"
+                              : action === "warn"
+                                ? "border-amber-500/40 bg-amber-500/10 text-amber-300"
+                                : "border-cyan-500/40 bg-cyan-500/10 text-cyan-300";
+
+                          return (
+                            <div key={`${policyItem?.name || "policy"}-${action}`} className="rounded-xl border border-white/10 bg-slate-950/50 p-3">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <span className={"inline-flex rounded-full border px-2 py-1 text-xs font-semibold " + (isDetected ? "border-rose-500/40 text-rose-300" : "border-emerald-500/40 text-emerald-300")}>
+                                  {isDetected ? "Violated" : "Safe"}
+                                </span>
+                                <span className="text-sm font-semibold text-slate-100">{policyItem?.name || "Unnamed policy"}</span>
+                                <span className={"inline-flex rounded-full border px-2 py-1 text-xs font-semibold uppercase " + actionClasses}>
+                                  {action}
+                                </span>
+                              </div>
+                              <p className="mt-2 text-xs text-slate-400">{policyItem?.reason || "No reason provided"}</p>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="rounded-2xl border border-white/10 bg-slate-900/60 p-4">
                     <p className="text-sm font-semibold text-white">Explainability</p>
                     <p className="mt-1 text-sm text-slate-400">Why this was flagged</p>
                     <ul className="mt-3 list-disc space-y-2 pl-5 text-sm text-slate-300">
@@ -518,6 +762,127 @@ export default function App() {
                       </>
                     )}
                   </div>
+                </div>
+              )}
+            </ResultCard>
+
+            <ResultCard title="Audit Log">
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-sm text-slate-400">Recent analyzed conversations (latest first)</p>
+                <button
+                  type="button"
+                  onClick={handleClearLogs}
+                  className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs font-semibold text-slate-200 transition hover:bg-white/10"
+                >
+                  Clear Logs
+                </button>
+              </div>
+
+              {!auditLogs.length ? (
+                <div className="mt-4 rounded-2xl border border-dashed border-white/10 bg-slate-900/60 p-4 text-sm text-slate-400">
+                  No audit logs available.
+                </div>
+              ) : (
+                <div className="mt-4 space-y-3">
+                  {auditLogs.map((log, index) => {
+                    const promptPreview = String(log?.prompt || "").slice(0, 120) || "(No prompt)";
+                    const risk = getRiskFromLogResult(log?.result);
+
+                    return (
+                      <div key={`${log?.timestamp || 0}-${index}`} className="rounded-xl border border-white/10 bg-slate-900/60 p-3">
+                        <p className="text-xs text-slate-400">{formatLogTime(log?.timestamp)} {log?.platform ? `· ${log.platform}` : ""}</p>
+                        <p className="mt-1 text-sm text-slate-100">{promptPreview}{String(log?.prompt || "").length > 120 ? "..." : ""}</p>
+                        <p className="mt-2 text-xs uppercase tracking-[0.14em] text-cyan-300">Risk: {risk}</p>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </ResultCard>
+
+            <ResultCard title="Enterprise Policies">
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-sm text-slate-400">Define custom policy rules and actions</p>
+                <button
+                  type="button"
+                  onClick={() => setShowPolicyForm((current) => !current)}
+                  className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs font-semibold text-slate-200 transition hover:bg-white/10"
+                >
+                  {showPolicyForm ? "Cancel" : "Add Policy"}
+                </button>
+              </div>
+
+              {showPolicyForm ? (
+                <div className="mt-4 space-y-3 rounded-xl border border-white/10 bg-slate-900/60 p-3">
+                  <input
+                    type="text"
+                    value={policyForm.name}
+                    onChange={(event) => setPolicyForm((current) => ({ ...current, name: event.target.value }))}
+                    placeholder="Policy name"
+                    className="w-full rounded-lg border border-white/10 bg-slate-950/60 px-3 py-2 text-sm text-slate-100 outline-none focus:border-cyan-400/50"
+                  />
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <select
+                      value={policyForm.category}
+                      onChange={(event) => setPolicyForm((current) => ({ ...current, category: event.target.value }))}
+                      className="rounded-lg border border-white/10 bg-slate-950/60 px-3 py-2 text-sm text-slate-100 outline-none focus:border-cyan-400/50"
+                    >
+                      <option value="pii">pii</option>
+                      <option value="medical">medical</option>
+                      <option value="financial">financial</option>
+                      <option value="custom">custom</option>
+                    </select>
+                    <select
+                      value={policyForm.action}
+                      onChange={(event) => setPolicyForm((current) => ({ ...current, action: event.target.value }))}
+                      className="rounded-lg border border-white/10 bg-slate-950/60 px-3 py-2 text-sm text-slate-100 outline-none focus:border-cyan-400/50"
+                    >
+                      <option value="flag">flag</option>
+                      <option value="warn">warn</option>
+                      <option value="block">block</option>
+                    </select>
+                  </div>
+                  <textarea
+                    rows={3}
+                    value={policyForm.rules}
+                    onChange={(event) => setPolicyForm((current) => ({ ...current, rules: event.target.value }))}
+                    placeholder="Comma-separated rules (regex or plain text)"
+                    className="w-full rounded-lg border border-white/10 bg-slate-950/60 px-3 py-2 text-sm text-slate-100 outline-none focus:border-cyan-400/50"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleAddPolicy}
+                    className="rounded-lg bg-cyan-500 px-4 py-2 text-sm font-semibold text-slate-950 transition hover:bg-cyan-400"
+                  >
+                    Save Policy
+                  </button>
+                </div>
+              ) : null}
+
+              {!policies.length ? (
+                <p className="mt-4 text-sm text-slate-400">No custom policies saved yet.</p>
+              ) : (
+                <div className="mt-4 space-y-2">
+                  {policies.map((policy) => (
+                    <div key={policy.id} className="rounded-xl border border-white/10 bg-slate-900/60 p-3">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <p className="text-sm font-semibold text-slate-100">{policy.name}</p>
+                        <button
+                          type="button"
+                          onClick={() => handleDeletePolicy(policy.id)}
+                          className="rounded-lg border border-rose-500/30 bg-rose-500/10 px-2 py-1 text-xs font-semibold text-rose-300 transition hover:bg-rose-500/20"
+                        >
+                          Delete
+                        </button>
+                      </div>
+                      <p className="mt-2 text-xs text-slate-400">
+                        {policy.category} · {policy.action}
+                      </p>
+                      <p className="mt-1 text-xs text-slate-500">
+                        Rules: {Array.isArray(policy.rules) ? policy.rules.join(", ") : "-"}
+                      </p>
+                    </div>
+                  ))}
                 </div>
               )}
             </ResultCard>

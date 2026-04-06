@@ -23,6 +23,7 @@ async def evaluate(
         prompt=payload.prompt,
         response=payload.response,
         request_id=request.state.request_id,
+        policies=payload.policies,
     )
 
 
