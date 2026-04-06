@@ -1,4 +1,7 @@
 const OVERLAY_ID = "safenet-ai-overlay-root";
+const ANALYZE_BUTTON_ID = "safenet-ai-analyze-fab";
+const FLOATING_ROOT_ID = "safenet-floating-root";
+const FLOATING_Z_INDEX = "2147483646";
 const DEBOUNCE_MS = 1200;
 const STABILIZE_MS = 1000;
 
@@ -537,6 +540,31 @@ function detectSourceName(node) {
   return null;
 }
 
+function ensureFloatingRoot() {
+  let root = document.getElementById(FLOATING_ROOT_ID);
+  if (root) {
+    return root;
+  }
+
+  root = document.createElement("div");
+  root.id = FLOATING_ROOT_ID;
+  root.style.position = "fixed";
+  root.style.right = "16px";
+  root.style.bottom = "16px";
+  root.style.zIndex = FLOATING_Z_INDEX;
+  root.style.display = "flex";
+  root.style.flexDirection = "column";
+  root.style.alignItems = "flex-end";
+  root.style.gap = "14px";
+  root.style.maxHeight = "calc(100vh - 24px)";
+  root.style.maxWidth = "min(94vw, 420px)";
+  root.style.overflowY = "auto";
+  root.style.pointerEvents = "none";
+
+  document.documentElement.appendChild(root);
+  return root;
+}
+
 function ensureOverlayRoot() {
   const existing = document.getElementById(OVERLAY_ID);
   if (existing) {
@@ -548,9 +576,8 @@ function ensureOverlayRoot() {
   const host = document.createElement("div");
   host.id = OVERLAY_ID;
   host.style.all = "initial";
-  host.style.position = "fixed";
-  host.style.zIndex = "2147483647";
-  host.style.inset = "auto 18px 18px auto";
+  host.style.display = "none";
+  host.style.pointerEvents = "auto";
 
   overlayShadow = host.attachShadow({ mode: "open" });
   const container = document.createElement("div");
@@ -630,7 +657,7 @@ function ensureOverlayRoot() {
       styleLink.textContent = "";
     });
 
-  document.documentElement.appendChild(host);
+  ensureFloatingRoot().appendChild(host);
   overlayElements = {
     host,
     panel: overlayShadow.querySelector("[data-panel]"),
@@ -662,6 +689,39 @@ function ensureOverlayRoot() {
   return host;
 }
 
+function ensureAnalyzeFab() {
+  let button = document.getElementById(ANALYZE_BUTTON_ID);
+  if (button) {
+    return button;
+  }
+
+  button = document.createElement("button");
+  button.id = ANALYZE_BUTTON_ID;
+  button.type = "button";
+  button.textContent = "Analyze";
+  button.style.position = "relative";
+  button.style.pointerEvents = "auto";
+  button.style.border = "1px solid #1e3a8a";
+  button.style.background = "rgb(6 182 212 / var(--tw-bg-opacity, 1))";
+  button.style.color = "#000000";
+  button.style.fontSize = "12px";
+  button.style.fontWeight = "700";
+  button.style.padding = "8px 12px";
+  button.style.borderRadius = "999px";
+  button.style.cursor = "pointer";
+  button.style.boxShadow = "0 8px 20px rgba(0,0,0,0.35)";
+  button.style.fontFamily = "ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif";
+
+  button.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    requestAnalysisNow();
+  });
+
+  ensureFloatingRoot().appendChild(button);
+  return button;
+}
+
 function showOverlay() {
   const host = ensureOverlayRoot();
   host.style.display = "block";
@@ -687,41 +747,16 @@ function toggleOverlay() {
 }
 
 function beginDrag(event) {
-  if (!overlayElements?.host) {
-    return;
-  }
-
-  dragState = {
-    startX: event.clientX,
-    startY: event.clientY,
-    left: overlayElements.host.getBoundingClientRect().left,
-    top: overlayElements.host.getBoundingClientRect().top,
-  };
-
-  overlayElements.host.style.inset = "auto";
-  overlayElements.host.style.right = "auto";
-  overlayElements.host.style.bottom = "auto";
-  overlayElements.host.style.left = `${dragState.left}px`;
-  overlayElements.host.style.top = `${dragState.top}px`;
-
-  window.addEventListener("pointermove", continueDrag);
-  window.addEventListener("pointerup", endDrag, { once: true });
+  // Shared floating layout is flex-driven; manual drag positioning is disabled to prevent overlap.
+  event.preventDefault();
 }
 
 function continueDrag(event) {
-  if (!dragState || !overlayElements?.host) {
-    return;
-  }
-
-  const dx = event.clientX - dragState.startX;
-  const dy = event.clientY - dragState.startY;
-  overlayElements.host.style.left = `${Math.max(8, dragState.left + dx)}px`;
-  overlayElements.host.style.top = `${Math.max(8, dragState.top + dy)}px`;
+  void event;
 }
 
 function endDrag() {
   dragState = null;
-  window.removeEventListener("pointermove", continueDrag);
 }
 
 function setBadgeText(element, text, tone) {
@@ -959,9 +994,6 @@ function scheduleExtraction() {
     const snapshot = buildConversationSnapshot();
     if (!snapshot || (!snapshot.prompt && !snapshot.response && snapshot.usersFound === 0 && snapshot.assistantsFound === 0)) {
       currentSnapshot = snapshot;
-      currentResult = null;
-      currentError = null;
-      renderState();
       return;
     }
 
@@ -981,11 +1013,6 @@ function scheduleExtraction() {
       }, STABILIZE_MS);
 
       currentSnapshot = snapshot;
-      currentResult = null;
-      currentError = null;
-      showOverlay();
-      overlayElements.status.textContent = "Waiting for response to finish streaming";
-      renderState();
       return;
     }
 
@@ -995,32 +1022,517 @@ function scheduleExtraction() {
 
     lastSignature = snapshot.signature;
     currentSnapshot = snapshot;
-    currentError = null;
-    renderSnapshot(snapshot);
-    showOverlay();
-    overlayElements.status.textContent = "Conversation updated";
-    renderWaiting("Sending the latest prompt and response to SafeNet AI.");
-
-    sendMessage({
-      type: "SAFENET_SNAPSHOT_UPDATED",
-      snapshot,
-    }).catch(() => {
-      // The background worker may not be ready yet.
-    });
   }, DEBOUNCE_MS);
 }
 
+const PROMPT_OPTIMIZER_ID = "safenet-prompt-optimizer-root";
+const PROMPT_OPTIMIZER_DEBOUNCE_MS = 900;
+const PROMPT_OPTIMIZER_IDLE_HIDE_MS = 5000;
+const PROMPT_OPTIMIZER_REQUEST_TIMEOUT_MS = 12000;
+
+let promptOptimizerWidget = null;
+
+function normalizePromptInputElement(target) {
+  if (!(target instanceof Element)) {
+    return null;
+  }
+
+  if (target instanceof HTMLTextAreaElement || target instanceof HTMLInputElement) {
+    return target;
+  }
+
+  const contentEditable = target.closest("[contenteditable='true']");
+  return contentEditable instanceof HTMLElement ? contentEditable : null;
+}
+
+function detectPromptPlatform() {
+  const hostname = String(window.location.hostname || "").toLowerCase();
+  if (hostname.includes("chatgpt.com") || hostname.includes("chat.openai.com")) {
+    return "chatgpt";
+  }
+  if (hostname.includes("claude.ai")) {
+    return "claude";
+  }
+  if (hostname.includes("gemini.google.com")) {
+    return "gemini";
+  }
+  if (hostname.includes("perplexity.ai")) {
+    return "perplexity";
+  }
+  return "generic";
+}
+
+function getPromptInputSelectors(platform) {
+  const byPlatform = {
+    chatgpt: [
+      "#prompt-textarea",
+      "textarea[data-id='root']",
+      "textarea[placeholder*='Message' i]",
+    ],
+    claude: [
+      "div[contenteditable='true'][role='textbox']",
+      "div[contenteditable='true']",
+      "textarea",
+    ],
+    gemini: [
+      "textarea",
+      "div[contenteditable='true'][role='textbox']",
+      "div[contenteditable='true']",
+    ],
+    perplexity: [
+      "textarea",
+      "input[type='text']",
+      "div[contenteditable='true'][role='textbox']",
+    ],
+    generic: [
+      "textarea",
+      "input[type='text']",
+      "div[contenteditable='true'][role='textbox']",
+      "div[contenteditable='true']",
+    ],
+  };
+
+  return byPlatform[platform] || byPlatform.generic;
+}
+
+function isPromptInputElement(element) {
+  const normalized = normalizePromptInputElement(element);
+  if (!normalized) {
+    return false;
+  }
+
+  const platform = detectPromptPlatform();
+  const selectors = getPromptInputSelectors(platform);
+  if (selectors.some((selector) => normalized.matches(selector))) {
+    return true;
+  }
+
+  return normalized.matches("textarea, input[type='text'], [contenteditable='true']");
+}
+
+function readPromptInputValue(element) {
+  const normalized = normalizePromptInputElement(element);
+  if (!normalized) {
+    return "";
+  }
+
+  if (normalized instanceof HTMLTextAreaElement || normalized instanceof HTMLInputElement) {
+    return quickCleanText(normalized.value || "");
+  }
+
+  return quickCleanText(normalized.innerText || normalized.textContent || "");
+}
+
+function optimizePromptText(rawPrompt) {
+  const prompt = quickCleanText(rawPrompt || "");
+  if (!prompt) {
+    return "";
+  }
+
+  const words = prompt.split(/\s+/).filter(Boolean);
+  const looksQuestion = /\?$/.test(prompt);
+
+  if (words.length <= 3) {
+    return `Explain ${prompt.replace(/\?+$/, "")} clearly with key details, practical examples, and concise next steps.`;
+  }
+
+  if (!looksQuestion && words.length < 12) {
+    return `${prompt}. Include clear context, constraints, and expected output format.`;
+  }
+
+  return prompt;
+}
+
+async function rewritePromptWithLLM(rawPrompt) {
+  const prompt = quickCleanText(rawPrompt || "");
+  if (!prompt) {
+    return "";
+  }
+
+  const optimizationResponse = await sendMessage({
+    type: "SAFENET_OPTIMIZE_PROMPT",
+    prompt,
+    timeoutMs: PROMPT_OPTIMIZER_REQUEST_TIMEOUT_MS,
+  });
+
+  if (optimizationResponse?.ok) {
+    const optimized = quickCleanText(optimizationResponse.optimizedPrompt || "");
+    if (optimized) {
+      return optimized;
+    }
+  }
+
+  // If optimization service is unavailable, preserve user intent without noisy templates.
+  return optimizePromptText(prompt);
+}
+
+function createPromptOptimizerWidget() {
+  const existing = document.getElementById(PROMPT_OPTIMIZER_ID);
+  if (existing?.shadowRoot?.querySelector("[data-po-root]")) {
+    return {
+      host: existing,
+      shadow: existing.shadowRoot,
+      root: existing.shadowRoot.querySelector("[data-po-root]"),
+    };
+  }
+
+  const host = document.createElement("div");
+  host.id = PROMPT_OPTIMIZER_ID;
+  host.style.all = "initial";
+  host.style.position = "relative";
+  host.style.display = "block";
+  host.style.pointerEvents = "auto";
+
+  const shadow = host.attachShadow({ mode: "open" });
+  const container = document.createElement("div");
+  container.setAttribute("data-po-root", "true");
+  container.innerHTML = `
+    <style>
+      :host { all: initial; }
+      .po-wrap { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif; color: #e5e7eb; }
+      .po-btn {
+        border: none;
+        border-radius: 999px;
+        padding: 8px 12px;
+        font-size: 12px;
+        font-weight: 600;
+        background: rgb(6 182 212 / var(--tw-bg-opacity, 1));
+        color: #111827;
+        cursor: pointer;
+        box-shadow: 0 6px 20px rgba(0,0,0,0.35);
+      }
+      .po-panel {
+        width: 330px;
+        margin-top: 8px;
+        border-radius: 12px;
+        overflow: hidden;
+        background: #0b1220;
+        border: 1px solid #1f2937;
+        box-shadow: 0 12px 32px rgba(0,0,0,0.45);
+      }
+      .po-hidden { display: none; }
+      .po-head {
+        background: #111827;
+        padding: 8px 10px;
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.02em;
+        color: #f9fafb;
+        cursor: move;
+        user-select: none;
+      }
+      .po-body { padding: 8px; display: grid; gap: 8px; }
+      .po-label { font-size: 11px; color: #93c5fd; margin-bottom: 4px; }
+      .po-box {
+        width: 100%;
+        min-height: 66px;
+        max-height: 140px;
+        overflow: auto;
+        border-radius: 8px;
+        border: 1px solid #243244;
+        background: #0f172a;
+        color: #e5e7eb;
+        font-size: 12px;
+        line-height: 1.4;
+        padding: 8px;
+        white-space: pre-wrap;
+      }
+      .po-actions { display: flex; justify-content: flex-end; }
+      .po-mini-btn {
+        border: 1px solid #334155;
+        border-radius: 8px;
+        background: #1e293b;
+        color: #e2e8f0;
+        font-size: 11px;
+        padding: 6px 8px;
+        cursor: pointer;
+      }
+    </style>
+    <div class="po-wrap">
+      <button class="po-btn" data-po-toggle type="button">⚡ Optimize</button>
+      <div class="po-panel po-hidden" data-po-panel>
+        <div class="po-head" data-po-drag>Prompt Optimizer</div>
+        <div class="po-body">
+          <div>
+            <div class="po-label">Original prompt</div>
+            <div class="po-box" data-po-original>Start typing in a prompt box...</div>
+          </div>
+          <div>
+            <div class="po-label">Optimized prompt</div>
+            <div class="po-box" data-po-optimized>Optimized prompt will appear here.</div>
+          </div>
+          <div class="po-actions">
+            <button class="po-mini-btn" data-po-refresh type="button">Optimize now</button>
+            <button class="po-mini-btn" data-po-copy type="button">Copy to input</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+
+  shadow.appendChild(container);
+  ensureFloatingRoot().appendChild(host);
+
+  return {
+    host,
+    shadow,
+    root: container,
+  };
+}
+
+function initPromptOptimizerWidget() {
+  if (promptOptimizerWidget) {
+    return;
+  }
+
+  const ui = createPromptOptimizerWidget();
+  const panel = ui.shadow.querySelector("[data-po-panel]");
+  const toggleBtn = ui.shadow.querySelector("[data-po-toggle]");
+  const refreshBtn = ui.shadow.querySelector("[data-po-refresh]");
+  const copyBtn = ui.shadow.querySelector("[data-po-copy]");
+  const dragHandle = ui.shadow.querySelector("[data-po-drag]");
+  const originalBox = ui.shadow.querySelector("[data-po-original]");
+  const optimizedBox = ui.shadow.querySelector("[data-po-optimized]");
+
+  let activeInput = null;
+  let hideTimer = null;
+  let listenersAbortController = new AbortController();
+  let optimizingRequestId = 0;
+  let isOptimizing = false;
+  let lastOptimizedSource = "";
+  let lastOptimizedValue = "";
+  let lastTypingAt = 0;
+  let lastInteractionAt = 0;
+  let drag = null;
+
+  const markInteraction = () => {
+    lastInteractionAt = Date.now();
+    if (hideTimer) {
+      clearTimeout(hideTimer);
+      hideTimer = null;
+    }
+  };
+
+  const setWidgetVisible = (visible) => {
+    ui.host.style.display = visible ? "block" : "none";
+    if (!visible) {
+      setExpanded(false);
+    }
+  };
+
+  const setExpanded = (expanded) => {
+    if (!panel) {
+      return;
+    }
+    panel.classList.toggle("po-hidden", !expanded);
+  };
+
+  const runOptimization = async () => {
+    const original = readPromptInputValue(activeInput);
+    originalBox.textContent = original || "Start typing in a prompt box...";
+
+    if (!original) {
+      optimizedBox.textContent = "Optimized prompt will appear here.";
+      return;
+    }
+
+    if (original === lastOptimizedSource && lastOptimizedValue) {
+      optimizedBox.textContent = lastOptimizedValue;
+      return;
+    }
+
+    if (isOptimizing) {
+      return;
+    }
+
+    isOptimizing = true;
+
+    const currentRequestId = ++optimizingRequestId;
+    optimizedBox.textContent = "⚡ Improving prompt...";
+
+    try {
+      const optimized = await rewritePromptWithLLM(original);
+      if (currentRequestId !== optimizingRequestId) {
+        return;
+      }
+
+      lastOptimizedSource = original;
+      lastOptimizedValue = optimized || optimizePromptText(original) || original;
+      optimizedBox.textContent = lastOptimizedValue;
+    } catch {
+      if (currentRequestId === optimizingRequestId) {
+        optimizedBox.textContent = "Unable to optimize right now.";
+      }
+    } finally {
+      if (currentRequestId === optimizingRequestId) {
+        isOptimizing = false;
+      }
+    }
+  };
+
+  const copyOptimizedToInput = () => {
+    const target = normalizePromptInputElement(activeInput || document.activeElement);
+    const optimized = quickCleanText(lastOptimizedValue || optimizedBox.textContent || "");
+
+    if (!target || !optimized || optimized === "⚡ Improving prompt...") {
+      return;
+    }
+
+    if (target instanceof HTMLTextAreaElement || target instanceof HTMLInputElement) {
+      target.focus();
+      target.value = optimized;
+      target.setSelectionRange(optimized.length, optimized.length);
+      target.dispatchEvent(new Event("input", { bubbles: true }));
+      target.dispatchEvent(new Event("change", { bubbles: true }));
+      return;
+    }
+
+    if (target instanceof HTMLElement) {
+      target.focus();
+      target.textContent = optimized;
+      const selection = window.getSelection();
+      if (selection) {
+        const range = document.createRange();
+        range.selectNodeContents(target);
+        range.collapse(false);
+        selection.removeAllRanges();
+        selection.addRange(range);
+      }
+      target.dispatchEvent(new InputEvent("input", { bubbles: true, data: optimized, inputType: "insertText" }));
+      target.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+  };
+
+  const scheduleAutoHide = () => {
+    if (hideTimer) {
+      clearTimeout(hideTimer);
+    }
+    hideTimer = setTimeout(() => {
+      hideTimer = null;
+
+      const activeEl = document.activeElement;
+      const focusInInput = isPromptInputElement(activeEl);
+      const focusInOptimizer = activeEl === ui.host || (activeEl instanceof Node && ui.shadow.contains(activeEl));
+      const idleForMs = Date.now() - Math.max(lastTypingAt, lastInteractionAt);
+
+      if (idleForMs >= PROMPT_OPTIMIZER_IDLE_HIDE_MS && !focusInInput && !focusInOptimizer) {
+        setWidgetVisible(false);
+      } else if (ui.host.style.display !== "none") {
+        scheduleAutoHide();
+      }
+    }, PROMPT_OPTIMIZER_IDLE_HIDE_MS);
+  };
+
+  const handleFocusIn = (event) => {
+    const candidate = normalizePromptInputElement(event.target);
+    if (!candidate || !isPromptInputElement(candidate)) {
+      return;
+    }
+    activeInput = candidate;
+    markInteraction();
+    originalBox.textContent = readPromptInputValue(activeInput) || "Start typing in a prompt box...";
+    optimizedBox.textContent = lastOptimizedValue || "Click Optimize now to improve this prompt.";
+  };
+
+  const handleInput = (event) => {
+    const candidate = normalizePromptInputElement(event.target);
+    if (!candidate || !isPromptInputElement(candidate)) {
+      return;
+    }
+
+    activeInput = candidate;
+    lastTypingAt = Date.now();
+    markInteraction();
+    originalBox.textContent = readPromptInputValue(activeInput) || "Start typing in a prompt box...";
+    if (!lastOptimizedValue) {
+      optimizedBox.textContent = "Click Optimize now to improve this prompt.";
+    }
+  };
+
+  const handleFocusOut = (event) => {
+    const nextFocus = event.relatedTarget;
+    if (nextFocus === ui.host || (nextFocus instanceof Node && ui.shadow.contains(nextFocus))) {
+      markInteraction();
+      return;
+    }
+  };
+
+  const beginDrag = (event) => {
+    markInteraction();
+    drag = null;
+    event.preventDefault();
+  };
+
+  toggleBtn?.addEventListener("click", () => {
+    markInteraction();
+    setWidgetVisible(true);
+    const isHidden = panel?.classList.contains("po-hidden");
+    setExpanded(Boolean(isHidden));
+    originalBox.textContent = readPromptInputValue(activeInput || document.activeElement) || "Start typing in a prompt box...";
+    if (!lastOptimizedValue) {
+      optimizedBox.textContent = "Click Optimize now to improve this prompt.";
+    }
+  });
+
+  refreshBtn?.addEventListener("click", () => {
+    markInteraction();
+    runOptimization();
+    setExpanded(true);
+  });
+
+  copyBtn?.addEventListener("click", () => {
+    markInteraction();
+    copyOptimizedToInput();
+    setExpanded(true);
+  });
+
+  dragHandle?.addEventListener("pointerdown", beginDrag);
+  ui.shadow.addEventListener("pointerdown", () => {
+    markInteraction();
+  });
+  ui.shadow.addEventListener("focusin", () => {
+    markInteraction();
+  });
+
+  document.addEventListener("focusin", handleFocusIn, { capture: true, signal: listenersAbortController.signal });
+  document.addEventListener("input", handleInput, { capture: true, signal: listenersAbortController.signal });
+  document.addEventListener("focusout", handleFocusOut, { capture: true, signal: listenersAbortController.signal });
+
+  const inputLifecycleObserver = new MutationObserver(() => {
+    if (activeInput && !document.contains(activeInput)) {
+      activeInput = null;
+    }
+  });
+  inputLifecycleObserver.observe(document.body || document.documentElement, {
+    subtree: true,
+    childList: true,
+  });
+
+  promptOptimizerWidget = {
+    ui,
+    inputLifecycleObserver,
+    cleanup: () => {
+      if (hideTimer) {
+        clearTimeout(hideTimer);
+        hideTimer = null;
+      }
+      listenersAbortController.abort();
+      inputLifecycleObserver.disconnect();
+    },
+  };
+}
+
 async function bootstrap() {
+  initPromptOptimizerWidget();
+
   runtimeGuardEnabled = isChatLikePage();
   if (!runtimeGuardEnabled) {
     console.log("SafeNet: Not a chat-like page, skipping content script runtime.");
     return;
   }
 
-  ensureOverlayRoot();
-  showOverlay();
-  renderWaiting("Waiting for conversation data from a supported LLM chat.");
-  renderSnapshot(buildConversationSnapshot());
+  ensureAnalyzeFab();
+  currentSnapshot = buildConversationSnapshot();
 
   mutationObserver = new MutationObserver(() => {
     scheduleExtraction();
@@ -1037,8 +1549,6 @@ async function bootstrap() {
       scheduleExtraction();
     }
   });
-
-  scheduleExtraction();
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {

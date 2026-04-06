@@ -1,4 +1,4 @@
-import { ApiError, evaluatePayload, getApiBaseUrl } from "./utils/apiClient.js";
+import { ApiError, evaluatePayload, getApiBaseUrl, optimizePromptPayload } from "./utils/apiClient.js";
 
 const DEFAULT_DEBOUNCE_MS = 1200;
 const tabState = new Map();
@@ -396,6 +396,37 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         ok: true,
         tabId,
         ...(await analyzeSnapshot(tabId, effectiveSnapshot)),
+      };
+    })()
+      .then(sendResponse)
+      .catch((error) => sendResponse({ ok: false, error: buildErrorEnvelope(error) }));
+
+    return true;
+  }
+
+  if (type === "SAFENET_OPTIMIZE_PROMPT") {
+    (async () => {
+      const prompt = cleanSignal(message?.prompt);
+      if (!prompt) {
+        return {
+          ok: false,
+          error: { code: "INVALID_PROMPT", message: "Prompt is required for optimization." },
+        };
+      }
+
+      const apiBaseUrl = await getApiBaseUrl();
+      const payload = await optimizePromptPayload(
+        { prompt },
+        {
+          baseUrl: apiBaseUrl,
+          timeoutMs: Number(message?.timeoutMs || 30000),
+          retries: 0,
+        },
+      );
+
+      return {
+        ok: true,
+        optimizedPrompt: cleanSignal(payload?.optimized_prompt || payload?.optimizedPrompt || ""),
       };
     })()
       .then(sendResponse)

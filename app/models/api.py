@@ -6,6 +6,14 @@ class EvaluateRequest(BaseModel):
     response: str = Field(..., min_length=1, max_length=20000)
 
 
+class PromptOptimizeRequest(BaseModel):
+    prompt: str = Field(..., min_length=1, max_length=20000)
+
+
+class PromptOptimizeResponse(BaseModel):
+    optimized_prompt: str = Field(..., min_length=1, max_length=20000)
+
+
 class Summary(BaseModel):
     risk_level: str = Field(..., pattern="^(low|medium|high)$")
     confidence: float = Field(..., ge=0, le=100)

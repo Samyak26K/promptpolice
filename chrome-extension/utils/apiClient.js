@@ -110,6 +110,7 @@ export async function setApiBaseUrl(baseUrl) {
 export function createApiClient({ baseUrl = DEFAULT_API_BASE_URL, timeoutMs = 40000, retries = 1 } = {}) {
   const normalizedBaseUrl = asText(baseUrl).trim().replace(/\/$/, "") || DEFAULT_API_BASE_URL;
   const evaluateUrl = `${normalizedBaseUrl}/api/v1/evaluate`;
+  const optimizePromptUrl = `${normalizedBaseUrl}/api/v1/prompt/optimize`;
 
   async function requestEvaluate(payload, requestOptions = {}) {
     const effectiveTimeoutMs = Number(requestOptions.timeoutMs ?? timeoutMs ?? 40000);
@@ -177,8 +178,75 @@ export function createApiClient({ baseUrl = DEFAULT_API_BASE_URL, timeoutMs = 40
     throw lastError || new ApiError("Request failed", "REQUEST_FAILED", 0);
   }
 
+  async function requestOptimizePrompt(payload, requestOptions = {}) {
+    const effectiveTimeoutMs = Number(requestOptions.timeoutMs ?? timeoutMs ?? 40000);
+    const maxAttempts = Math.max(1, Number(requestOptions.retries ?? retries ?? 1) + 1);
+    let lastError = null;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), effectiveTimeoutMs);
+
+      try {
+        const response = await fetch(optimizePromptUrl, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(payload),
+          signal: controller.signal,
+        });
+
+        const body = await readResponseBody(response);
+
+        if (!response.ok) {
+          const fallbackMessage = `Request failed with status ${response.status}`;
+          const normalized = normalizeErrorPayload(body, response.status, fallbackMessage);
+          throw new ApiError(normalized.message, normalized.code, response.status, normalized.details);
+        }
+
+        return body;
+      } catch (error) {
+        const isAbort = error?.name === "AbortError";
+        const isNetworkFailure = !isAbort && error?.name === "TypeError";
+        const status = isAbort ? 504 : error?.status || 0;
+        const code = isAbort
+          ? "LLM_TIMEOUT"
+          : isNetworkFailure
+            ? "BACKEND_OFFLINE"
+            : error?.code || "REQUEST_FAILED";
+        const message = isAbort
+          ? "Model did not respond in time"
+          : isNetworkFailure
+            ? `Cannot reach backend at ${optimizePromptUrl}. Ensure SafeNet API is running.`
+            : asText(error?.message || "Request failed");
+
+        lastError = error instanceof ApiError
+          ? error
+          : new ApiError(
+              message,
+              code,
+              status,
+              error,
+            );
+
+        const shouldRetry = attempt < maxAttempts && (isAbort || code === "REQUEST_FAILED" || code === "LLM_TIMEOUT");
+        if (!shouldRetry) {
+          throw lastError;
+        }
+
+        await new Promise((resolve) => setTimeout(resolve, 350 * attempt));
+      } finally {
+        clearTimeout(timeoutId);
+      }
+    }
+
+    throw lastError || new ApiError("Request failed", "REQUEST_FAILED", 0);
+  }
+
   return {
     requestEvaluate,
+    requestOptimizePrompt,
   };
 }
 
@@ -190,4 +258,14 @@ export async function evaluatePayload(payload, options = {}) {
     retries: options.retries,
   });
   return client.requestEvaluate(payload, options);
+}
+
+export async function optimizePromptPayload(payload, options = {}) {
+  const baseUrl = options.baseUrl || (await getApiBaseUrl());
+  const client = createApiClient({
+    baseUrl,
+    timeoutMs: options.timeoutMs,
+    retries: options.retries,
+  });
+  return client.requestOptimizePrompt(payload, options);
 }
