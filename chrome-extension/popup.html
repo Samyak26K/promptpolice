@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SafeNet AI Inspector</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <main class="popup-shell">
+      <header class="popup-header">
+        <div>
+          <p class="eyebrow">SafeNet AI</p>
+          <h1>Inspector</h1>
+        </div>
+        <button id="refreshButton" class="ghost-button" type="button">Analyze</button>
+      </header>
+
+      <section class="status-card" id="statusCard">
+        <div class="status-line">
+          <span class="status-label">Risk</span>
+          <strong id="riskValue">Waiting</strong>
+        </div>
+        <div class="status-line">
+          <span class="status-label">Confidence</span>
+          <strong id="confidenceValue">—</strong>
+        </div>
+        <div class="status-line">
+          <span class="status-label">Relevance</span>
+          <strong id="relevanceValue">—</strong>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-title-row">
+          <h2>Extracted Prompt</h2>
+          <span class="pill" id="promptLength">0 chars</span>
+        </div>
+        <textarea id="promptPreview" class="preview" readonly placeholder="No prompt detected yet."></textarea>
+      </section>
+
+      <section class="panel">
+        <div class="panel-title-row">
+          <h2>Extracted Response</h2>
+          <span class="pill" id="responseLength">0 chars</span>
+        </div>
+        <textarea id="responsePreview" class="preview response-preview" readonly placeholder="No response detected yet."></textarea>
+      </section>
+
+      <section class="panel">
+        <div class="panel-title-row">
+          <h2>Flags</h2>
+        </div>
+        <div class="flag-row">
+          <span class="flag-chip" id="hallucinationFlag">Hallucination: Clear</span>
+          <span class="flag-chip" id="toxicityFlag">Toxicity: Clear</span>
+          <span class="flag-chip" id="piiFlag">PII: Clear</span>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-title-row">
+          <h2>Analysis</h2>
+        </div>
+        <div id="analysisState" class="analysis-state">Open a supported LLM chat and click Analyze.</div>
+      </section>
+
+      <section class="panel error-panel hidden" id="errorPanel">
+        <div class="panel-title-row">
+          <h2>Error</h2>
+        </div>
+        <div id="errorText" class="analysis-state"></div>
+      </section>
+    </main>
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>

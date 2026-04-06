@@ -1,0 +1,220 @@
+:host {
+  all: initial;
+}
+
+.safenet-panel {
+  width: min(380px, calc(100vw - 24px));
+  max-height: min(80vh, 760px);
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 18px;
+  background: linear-gradient(180deg, rgba(5, 12, 26, 0.96), rgba(15, 23, 42, 0.96));
+  color: #e5eefc;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(16px);
+  font-family: Inter, "Segoe UI", system-ui, -apple-system, sans-serif;
+}
+
+.safenet-panel.safenet-collapsed {
+  width: 320px;
+}
+
+.safenet-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 12px 12px 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  cursor: grab;
+  user-select: none;
+}
+
+.safenet-header:active {
+  cursor: grabbing;
+}
+
+.safenet-title-block {
+  min-width: 0;
+}
+
+.safenet-title {
+  font-size: 14px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+}
+
+.safenet-subtitle {
+  margin-top: 2px;
+  font-size: 11px;
+  color: rgba(229, 238, 252, 0.72);
+}
+
+.safenet-header-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.safenet-icon-button {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.06);
+  color: #f8fafc;
+  border-radius: 10px;
+  padding: 7px 10px;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.safenet-icon-button:hover {
+  background: rgba(255, 255, 255, 0.11);
+}
+
+.safenet-body {
+  display: grid;
+  gap: 12px;
+  padding: 12px;
+  max-height: calc(80vh - 62px);
+  overflow: auto;
+}
+
+.safenet-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.safenet-metric {
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(2, 6, 23, 0.52);
+  padding: 10px;
+}
+
+.safenet-label {
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: rgba(148, 163, 184, 0.9);
+}
+
+.safenet-value {
+  margin-top: 6px;
+  font-size: 24px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.safenet-section {
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(2, 6, 23, 0.44);
+  padding: 10px;
+}
+
+.safenet-section-title {
+  margin-bottom: 8px;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: rgba(148, 163, 184, 0.92);
+}
+
+.safenet-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.safenet-badge {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  padding: 6px 10px;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.safenet-badge-quiet {
+  background: rgba(15, 23, 42, 0.82);
+  color: #dbeafe;
+}
+
+.safenet-badge-flagged {
+  color: #fff;
+}
+
+.safenet-badge[data-tone='danger'],
+.tone-danger {
+  border-color: rgba(220, 38, 38, 0.32);
+  background: rgba(220, 38, 38, 0.18);
+  color: #fecaca;
+}
+
+.safenet-badge[data-tone='warn'],
+.tone-warn {
+  border-color: rgba(245, 158, 11, 0.32);
+  background: rgba(245, 158, 11, 0.18);
+  color: #fde68a;
+}
+
+.safenet-badge[data-tone='safe'],
+.tone-safe {
+  border-color: rgba(22, 163, 74, 0.32);
+  background: rgba(22, 163, 74, 0.18);
+  color: #bbf7d0;
+}
+
+.tone-neutral {
+  border-color: rgba(255, 255, 255, 0.1);
+  background: rgba(15, 23, 42, 0.82);
+  color: #dbeafe;
+}
+
+.safenet-snapshot {
+  display: grid;
+  gap: 8px;
+}
+
+.safenet-snapshot-label {
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: rgba(148, 163, 184, 0.9);
+}
+
+.safenet-snapshot-text {
+  max-height: 100px;
+  overflow: auto;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(2, 6, 23, 0.56);
+  padding: 10px;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  color: #e5eefc;
+}
+
+.safenet-details {
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  color: rgba(226, 232, 240, 0.9);
+}
+
+.safenet-panel::-webkit-scrollbar,
+.safenet-body::-webkit-scrollbar,
+.safenet-snapshot-text::-webkit-scrollbar {
+  width: 8px;
+}
+
+.safenet-panel::-webkit-scrollbar-thumb,
+.safenet-body::-webkit-scrollbar-thumb,
+.safenet-snapshot-text::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.35);
+}
