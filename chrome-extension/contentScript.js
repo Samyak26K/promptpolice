@@ -9,6 +9,10 @@ const DASHBOARD_TRANSFER_PARAM = "safenetPayload";
 const DASHBOARD_LOGS_PARAM = "safenetAuditLogs";
 const AUDIT_LOG_KEY = "safenet_audit_logs";
 const AUDIT_LOG_LIMIT = 50;
+const REALTIME_POLICY_MODE_KEY = "safenet_realtime_policy_mode";
+const POLICY_STORAGE_KEY = "safenet_policies";
+const REALTIME_POLICY_DEBOUNCE_MS = 400;
+const POLICY_RUNTIME_UI_ID = "safenet-policy-runtime-ui";
 
 const PLATFORM_STRATEGIES = {
   claude: {
@@ -108,6 +112,47 @@ let assistantStableSince = Date.now();
 let streamingRetryTimer = null;
 let runtimeGuardEnabled = false;
 let lastDiagnosticLog = null;  // Track last logged diagnostic to avoid spam
+let realtimePolicyModeEnabled = false;
+let realtimePolicyBlocked = false;
+let realtimePolicyBlockedPolicy = "";
+let realtimePolicyLastEvaluation = [];
+let realtimePolicyActiveInput = null;
+let realtimePolicyDebounceTimer = null;
+let realtimePolicyRuntimeUi = null;
+let realtimePolicyMaskedPreview = "";
+let realtimePolicyShowMaskedPreview = false;
+let realtimePolicyLastState = null;
+
+const DEFAULT_REALTIME_POLICIES = [
+  {
+    name: "PII Sensitive Data",
+    category: "pii",
+    rules: [
+      "[a-zA-Z0-9._%+-]+@[a-z0-9.-]+\\.[a-z]{2,}",
+      "\\b(?:\\+91[-\\s]?|0)?[6-9]\\d{9}\\b",
+      "\\b(?:\\d[ -]*?){13,16}\\b",
+      "\\b\\d{4}[ -]?\\d{4}[ -]?\\d{4}\\b",
+      "\\b[A-Z]{5}[0-9]{4}[A-Z]{1}\\b",
+      "account number",
+      "acc no",
+      "credit card",
+      "debit card",
+      "password",
+      "api key",
+      "token",
+      "auth",
+      "private key",
+      "secret",
+    ],
+    action: "block",
+  },
+  {
+    name: "Medical Content",
+    category: "medical",
+    rules: ["patient", "diagnosis", "prescription", "medical record", "PHI"],
+    action: "warn",
+  },
+];
 
 const CHAT_HOST_HINTS = [
   "chatgpt",
@@ -598,6 +643,7 @@ function ensureOverlayRoot() {
           <div class="safenet-subtitle" data-status>Waiting for conversation</div>
         </div>
         <div class="safenet-header-actions">
+          <button type="button" class="safenet-icon-button" data-policy-mode-btn title="Toggle realtime policy mode">Policy: OFF</button>
           <button type="button" class="safenet-icon-button" data-dashboard-btn title="Open dashboard">Dashboard</button>
           <button type="button" class="safenet-icon-button" data-analyze-btn title="Analyze now">Analyze</button>
           <button type="button" class="safenet-icon-button" data-toggle-btn title="Expand or collapse">+</button>
@@ -692,6 +738,7 @@ function ensureOverlayRoot() {
     relevance: overlayShadow.querySelector("[data-relevance]"),
     factCheck: overlayShadow.querySelector("[data-fact-check]"),
     details: overlayShadow.querySelector("[data-details]"),
+    policyModeBtn: overlayShadow.querySelector("[data-policy-mode-btn]"),
     dashboardBtn: overlayShadow.querySelector("[data-dashboard-btn]"),
     prevBtn: overlayShadow.querySelector("[data-prev-btn]"),
     nextBtn: overlayShadow.querySelector("[data-next-btn]"),
@@ -711,6 +758,23 @@ function ensureOverlayRoot() {
 
   overlayElements.toggleBtn.addEventListener("click", toggleOverlay);
   overlayElements.closeBtn.addEventListener("click", hideOverlay);
+  overlayElements.policyModeBtn?.addEventListener("click", () => {
+    realtimePolicyModeEnabled = !realtimePolicyModeEnabled;
+    saveRealtimePolicyMode(realtimePolicyModeEnabled);
+    updateRealtimePolicyButton();
+
+    if (!realtimePolicyModeEnabled) {
+      realtimePolicyBlocked = false;
+      realtimePolicyBlockedPolicy = "";
+      renderRealtimePolicyState({ tone: "safe", label: "Safe", warningText: "" });
+      return;
+    }
+
+    const active = normalizePromptInputElement(document.activeElement) || realtimePolicyActiveInput;
+    if (active) {
+      scheduleRealtimePolicyEvaluation(active);
+    }
+  });
   overlayElements.dashboardBtn?.addEventListener("click", () => {
     buildDashboardUrlWithSnapshot(currentSnapshot)
       .then((dashboardUrl) => {
@@ -733,6 +797,7 @@ function ensureOverlayRoot() {
   overlayElements.analyzeBtn.addEventListener("click", requestAnalysisNow);
   overlayElements.dragHandle.addEventListener("pointerdown", beginDrag);
   updateHistoryControls();
+  updateRealtimePolicyButton();
 
   return host;
 }
@@ -1416,6 +1481,822 @@ function readPromptInputValue(element) {
   return quickCleanText(normalized.innerText || normalized.textContent || "");
 }
 
+function loadRealtimePolicyMode() {
+  return new Promise((resolve) => {
+    if (!globalThis.chrome?.storage?.local) {
+      resolve(false);
+      return;
+    }
+
+    chrome.storage.local.get([REALTIME_POLICY_MODE_KEY], (stored) => {
+      if (chrome.runtime?.lastError) {
+        resolve(false);
+        return;
+      }
+
+      resolve(Boolean(stored?.[REALTIME_POLICY_MODE_KEY]));
+    });
+  });
+}
+
+function saveRealtimePolicyMode(value) {
+  if (!globalThis.chrome?.storage?.local) {
+    return;
+  }
+
+  chrome.storage.local.set({ [REALTIME_POLICY_MODE_KEY]: Boolean(value) }, () => {
+    void chrome.runtime?.lastError;
+  });
+}
+
+function loadRealtimePolicies() {
+  return new Promise((resolve) => {
+    if (!globalThis.chrome?.storage?.local) {
+      resolve(DEFAULT_REALTIME_POLICIES);
+      return;
+    }
+
+    chrome.storage.local.get([POLICY_STORAGE_KEY], (stored) => {
+      if (chrome.runtime?.lastError) {
+        resolve(DEFAULT_REALTIME_POLICIES);
+        return;
+      }
+
+      const candidate = stored?.[POLICY_STORAGE_KEY];
+      if (!Array.isArray(candidate) || candidate.length === 0) {
+        resolve(DEFAULT_REALTIME_POLICIES);
+        return;
+      }
+
+      resolve(candidate);
+    });
+  });
+}
+
+function doesRuleMatch(rule, text) {
+  const normalizedRule = String(rule || "").trim();
+  if (!normalizedRule) {
+    return false;
+  }
+
+  try {
+    return new RegExp(normalizedRule, "i").test(text);
+  } catch {
+    return false;
+  }
+}
+
+function maskSensitiveValue(value, piiType = "") {
+  const source = String(value || "");
+  const normalizedType = String(piiType || "").toLowerCase();
+
+  if (!source) {
+    return "";
+  }
+
+  if (normalizedType === "email") {
+    const match = source.match(/^([^@]+)@(.+)$/);
+    if (!match) {
+      return "";
+    }
+    const local = String(match[1] || "");
+    const domain = String(match[2] || "");
+    if (!local || !domain) {
+      return "";
+    }
+    return `${local.charAt(0)}***@${domain}`;
+  }
+
+  if (normalizedType === "pan") {
+    if (/^[A-Z]{5}[0-9]{4}[A-Z]$/i.test(source)) {
+      return `*****${source.slice(5)}`;
+    }
+  }
+
+  const digitsOnly = source.replace(/\D/g, "");
+  if (digitsOnly.length < 8) {
+    const compact = source.replace(/\s+/g, "");
+    const hasAlphaNumeric = /[a-z]/i.test(compact) && /\d/.test(compact);
+    if (hasAlphaNumeric && compact.length > 4) {
+      return `${"*".repeat(Math.max(0, compact.length - 4))}${compact.slice(-4)}`;
+    }
+    return "";
+  }
+
+  if (normalizedType === "pan") {
+    return `*****${source.replace(/\s+/g, "").slice(-5)}`;
+  }
+
+  const keepDigits = digitsOnly.slice(-4);
+  let revealIndex = 0;
+  const totalHidden = Math.max(0, digitsOnly.length - 4);
+
+  return source.replace(/\d/g, () => {
+    if (revealIndex < totalHidden) {
+      revealIndex += 1;
+      return "*";
+    }
+    const nextChar = keepDigits[revealIndex - totalHidden] || "*";
+    revealIndex += 1;
+    return nextChar;
+  });
+}
+
+function genericMask(value) {
+  const source = String(value || "");
+  if (!source) {
+    return "";
+  }
+
+  if (source.length <= 4) {
+    return source;
+  }
+
+  return `${"*".repeat(source.length - 4)}${source.slice(-4)}`;
+}
+
+function isMaskedValue(text) {
+  const str = String(text || "");
+  if (!str) return false;
+
+  const starCount = (str.match(/\*/g) || []).length;
+  const digitCount = (str.match(/\d/g) || []).length;
+
+  return (
+    starCount >= 3 &&
+    starCount > digitCount // more masked than real digits
+  );
+}
+
+function extractKeywordSensitiveValue(promptText, keyword) {
+  const source = String(promptText || "");
+  const normalizedKeyword = String(keyword || "").trim().toLowerCase();
+  if (!source || !normalizedKeyword) {
+    return "";
+  }
+
+  const cleanCandidate = (raw) => String(raw || "").replace(/^['"`\s]+|['"`\s]+$/g, "");
+  const patterns = {
+    "api key": [
+      /api\s*key\s*(?:is|=|:)?\s*([A-Za-z0-9._\-]{8,})/i,
+      /\b(?:sk|pk|rk|ak)[-_][A-Za-z0-9._\-]{8,}\b/i,
+    ],
+    password: [
+      /password\s*(?:is|=|:)?\s*([^\s,;]{6,})/i,
+    ],
+    secret: [
+      /secret\s*(?:is|=|:)?\s*([^\s,;]{6,})/i,
+      /(?:client_secret|api_secret)\s*(?:=|:)\s*([^\s,;]{6,})/i,
+    ],
+  };
+
+  const selected = patterns[normalizedKeyword] || [];
+  for (const pattern of selected) {
+    const match = source.match(pattern);
+    const candidate = cleanCandidate(match?.[1] || match?.[0] || "");
+    if (candidate && candidate.length > 4) {
+      return candidate;
+    }
+  }
+
+  return "";
+}
+
+function extractSensitiveValueFromPrompt(promptText, piiType, matchedText) {
+  const source = String(promptText || "");
+  const normalizedType = String(piiType || "").trim().toLowerCase();
+  const normalizedMatched = String(matchedText || "").trim();
+  if (!source) {
+    return "";
+  }
+
+  const cleanCandidate = (raw) => String(raw || "").replace(/^['"`\s]+|['"`\s]+$/g, "");
+
+  if (normalizedMatched && source.toLowerCase().includes(normalizedMatched.toLowerCase()) && normalizedMatched.length > 4) {
+    return normalizedMatched;
+  }
+
+  const typePatterns = {
+    email: [/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/],
+    phone: [/\b(?:\+?\d[\d\s-]{9,14}\d)\b/],
+    card: [/\b(?:\d[ -]*?){13,16}\b/],
+    aadhaar: [/\b\d{4}[ -]?\d{4}[ -]?\d{4}\b/],
+    pan: [/\b[A-Z]{5}[0-9]{4}[A-Z]\b/i],
+    secret: [
+      /(?:api[_\s-]*key|token|secret|password|auth(?:orization)?|private[_\s-]*key)\s*(?:is|=|:)?\s*['"`]?([A-Za-z0-9._\-]{8,})['"`]?/i,
+      /\b(?:sk|pk|rk|ak)[-_][A-Za-z0-9._\-]{8,}\b/i,
+      /(?:client_secret|api_secret)\s*(?:=|:)\s*['"`]?([^\s,;"']{6,})['"`]?/i,
+    ],
+  };
+
+  const selectedPatterns = typePatterns[normalizedType] || typePatterns.secret;
+  for (const pattern of selectedPatterns) {
+    const match = source.match(pattern);
+    const candidate = cleanCandidate(match?.[1] || match?.[0] || "");
+    if (candidate && candidate.length > 4) {
+      return candidate;
+    }
+  }
+
+  return "";
+}
+
+function detectRuleWithConfidence(rule, text) {
+  const normalizedRule = String(rule || "").trim();
+  if (!normalizedRule) {
+    return { detected: false, confidence: 0, matchedRule: "", matchedText: "", maskedValue: "", piiType: "" };
+  }
+
+  if (isMaskedValue(text)) {
+    return {
+      detected: false,
+      confidence: 0,
+      matchedRule: "",
+      matchedText: "",
+      maskedValue: "",
+      piiType: "",
+    };
+  }
+
+  const safeText = String(text || "").replace(/\b(version\s+\d+(?:\.\d+)+|top\s+\d+|step\s+\d+)\b/gi, " ");
+  const normalizedText = safeText.replace(/[\s-]/g, "");
+  const digitsCandidates = safeText.match(/\d[\d\s-]{7,}\d/g) || [];
+  const hasLongNumericCandidate = /\d{10,}/.test(normalizedText);
+  const hasMediumNumericCandidate = /\d{8,}/.test(normalizedText);
+  const ruleLooksNumeric = /\\d|\[0-9\]|\{\d+,?\d*\}|\d\{\d+,?\d*\}/.test(normalizedRule);
+  const lowerRule = normalizedRule.toLowerCase();
+  const isKeywordOnlyMatch = lowerRule === "api key" || lowerRule === "password" || lowerRule === "secret";
+
+  if (isKeywordOnlyMatch && isMaskedValue(text)) {
+    return {
+      detected: false,
+      confidence: 0,
+      matchedRule: "",
+      matchedText: "",
+      maskedValue: "",
+      piiType: "",
+    };
+  }
+
+  const piiType = (() => {
+    if (lowerRule.includes("@") || lowerRule.includes("[a-z") || lowerRule.includes("email")) {
+      return "email";
+    }
+    if (lowerRule.includes("+91") || lowerRule.includes("[6-9]") || lowerRule.includes("phone")) {
+      return "phone";
+    }
+    if (lowerRule.includes("[a-z]{5}[0-9]{4}[a-z]{1}") || lowerRule.includes("pan")) {
+      return "pan";
+    }
+    if (lowerRule.includes("\\d{4}[ -]?\\d{4}[ -]?\\d{4}") || lowerRule.includes("aadhaar")) {
+      return "aadhaar";
+    }
+    if (lowerRule.includes("(?:\\d[ -]*?){13,16}") || lowerRule.includes("credit card") || lowerRule.includes("debit card") || lowerRule.includes("card")) {
+      return "card";
+    }
+    if (lowerRule.includes("api key") || lowerRule.includes("secret") || lowerRule.includes("token") || lowerRule.includes("auth") || lowerRule.includes("private key") || lowerRule.includes("password")) {
+      return "secret";
+    }
+    return ruleLooksNumeric ? "card" : "secret";
+  })();
+
+  let regexMatch = null;
+  try {
+    const match = safeText.match(new RegExp(normalizedRule, "i"));
+    regexMatch = match?.[0] || null;
+  } catch {
+    regexMatch = null;
+  }
+
+  if (isMaskedValue(regexMatch)) {
+    return {
+      detected: false,
+      confidence: 0,
+      matchedRule: "",
+      matchedText: "",
+      maskedValue: "",
+      piiType: "",
+    };
+  }
+
+  if (isKeywordOnlyMatch && isMaskedValue(regexMatch || text)) {
+    return {
+      detected: false,
+      confidence: 0,
+      matchedRule: "",
+      matchedText: "",
+      maskedValue: "",
+      piiType: "",
+    };
+  }
+
+  const keywordDetected = safeText.toLowerCase().includes(normalizedRule.toLowerCase());
+  const keywordAndNumber = keywordDetected && hasMediumNumericCandidate;
+
+  if (piiType === "email" && regexMatch) {
+    return {
+      detected: true,
+      confidence: 0.8,
+      matchedRule: normalizedRule,
+      matchedText: regexMatch,
+      maskedValue: maskSensitiveValue(regexMatch, "email"),
+      piiType: "email",
+    };
+  }
+
+  if (piiType === "phone" && regexMatch) {
+    const phoneDigits = String(regexMatch).replace(/\D/g, "").length;
+    if (phoneDigits >= 10) {
+      return {
+        detected: true,
+        confidence: 0.8,
+        matchedRule: normalizedRule,
+        matchedText: regexMatch,
+        maskedValue: maskSensitiveValue(regexMatch, "phone"),
+        piiType: "phone",
+      };
+    }
+    return { detected: false, confidence: 0, matchedRule: "", matchedText: "", maskedValue: "", piiType: "" };
+  }
+
+  if (piiType === "pan" && regexMatch) {
+    return {
+      detected: true,
+      confidence: 0.92,
+      matchedRule: normalizedRule,
+      matchedText: regexMatch,
+      maskedValue: maskSensitiveValue(regexMatch, "pan"),
+      piiType: "pan",
+    };
+  }
+
+  if (piiType === "aadhaar" && regexMatch) {
+    const aadhaarDigits = String(regexMatch).replace(/\D/g, "").length;
+    if (aadhaarDigits >= 12) {
+      return {
+        detected: true,
+        confidence: 0.92,
+        matchedRule: normalizedRule,
+        matchedText: regexMatch,
+        maskedValue: maskSensitiveValue(regexMatch, "aadhaar"),
+        piiType: "aadhaar",
+      };
+    }
+    return { detected: false, confidence: 0, matchedRule: "", matchedText: "", maskedValue: "", piiType: "" };
+  }
+
+  if (ruleLooksNumeric || piiType === "card") {
+    const numericMatchDigits = String(regexMatch || "").replace(/\D/g, "").length;
+    if (regexMatch && numericMatchDigits >= 13) {
+      const confidence = keywordDetected ? 0.95 : 0.9;
+      return {
+        detected: true,
+        confidence,
+        matchedRule: normalizedRule,
+        matchedText: regexMatch,
+        maskedValue: maskSensitiveValue(regexMatch, "card"),
+        piiType: "card",
+      };
+    }
+
+    if (keywordAndNumber && hasLongNumericCandidate) {
+      const candidate = digitsCandidates.find((item) => item.replace(/\D/g, "").length >= 10) || "";
+      return {
+        detected: true,
+        confidence: 0.65,
+        matchedRule: normalizedRule,
+        matchedText: candidate,
+        maskedValue: maskSensitiveValue(candidate, "card"),
+        piiType: "card",
+      };
+    }
+
+    return { detected: false, confidence: 0, matchedRule: "", matchedText: "", maskedValue: "", piiType: "" };
+  }
+
+  if (keywordAndNumber) {
+    const candidate = digitsCandidates.find((item) => item.replace(/\D/g, "").length >= 8) || "";
+    return {
+      detected: true,
+      confidence: 0.65,
+      matchedRule: normalizedRule,
+      matchedText: candidate || normalizedRule,
+      maskedValue: maskSensitiveValue(candidate, piiType),
+      piiType,
+    };
+  }
+
+  if (keywordDetected) {
+    const matchedText = normalizedRule;
+    const maskedValue = maskSensitiveValue(matchedText, piiType);
+    return {
+      detected: true,
+      confidence: 0.35,
+      matchedRule: normalizedRule,
+      matchedText,
+      maskedValue,
+      piiType,
+    };
+  }
+
+  return { detected: false, confidence: 0, matchedRule: "", matchedText: "", maskedValue: "", piiType: "" };
+}
+
+function evaluateRealtimePolicies(promptText, policies) {
+  const text = String(promptText || "");
+
+  if (isMaskedValue(text)) {
+    return (policies || []).map((policy) => ({
+      name: String(policy?.name || "Unnamed policy"),
+      action: String(policy?.action || "flag").toLowerCase(),
+      detected: false,
+      confidence: 0,
+      matchedRule: "",
+      matchedText: "",
+      piiType: "",
+      maskedValue: "",
+      reason: "No rule matched",
+    }));
+  }
+
+  const evaluation = [];
+
+  for (const policy of policies || []) {
+    const rawRules = Array.isArray(policy?.rules) ? policy.rules : [];
+    const normalizedRules = rawRules
+      .map((entry) => (typeof entry === "string" ? entry : entry?.pattern))
+      .filter(Boolean);
+
+    const detections = normalizedRules
+      .map((rule) => detectRuleWithConfidence(rule, text))
+      .filter((result) => result.detected)
+      .sort((left, right) => right.confidence - left.confidence);
+    const topDetection = detections[0] || null;
+
+    if (topDetection && isMaskedValue(topDetection.matchedText)) {
+      evaluation.push({
+        name: String(policy?.name || "Unnamed policy"),
+        action: "allow",
+        detected: false,
+        confidence: 0,
+        matchedRule: "",
+        matchedText: "",
+        piiType: "",
+        maskedValue: "",
+        reason: "Already masked -> safe",
+      });
+      continue;
+    }
+
+    evaluation.push({
+      name: String(policy?.name || "Unnamed policy"),
+      action: String(policy?.action || "flag").toLowerCase(),
+      detected: Boolean(topDetection),
+      confidence: Number(topDetection?.confidence || 0),
+      matchedRule: String(topDetection?.matchedRule || ""),
+      matchedText: String(topDetection?.matchedText || ""),
+      piiType: String(topDetection?.piiType || ""),
+      maskedValue: String(topDetection?.maskedValue || ""),
+      reason: topDetection ? `Matched rule: ${topDetection.matchedRule}` : "No rule matched",
+    });
+
+    if (topDetection && !topDetection.maskedValue && topDetection.matchedText) {
+      evaluation[evaluation.length - 1].maskedValue = maskSensitiveValue(topDetection.matchedText, topDetection.piiType);
+    }
+  }
+
+  return evaluation;
+}
+
+function getRealtimePolicyState(evaluation) {
+  const getConfidence = (item) => Math.max(0, Math.min(1, Number(item?.confidence || 0)));
+  const hasMaskedDetection = (evaluation || []).some((item) => item?.detected && isMaskedValue(item?.matchedText || ""));
+  if (hasMaskedDetection) {
+    return {
+      tone: "safe",
+      label: "Safe",
+      blocked: false,
+      policyName: "",
+      confidence: 0,
+      matchedText: "",
+      piiType: "",
+      maskedValue: "",
+      warningText: "",
+    };
+  }
+
+  const blocked = evaluation.find((item) => item.detected && item.action === "block");
+  if (blocked) {
+    return {
+      tone: "danger",
+      label: "Blocked",
+      blocked: true,
+      policyName: blocked.name,
+      confidence: getConfidence(blocked),
+      matchedText: String(blocked.matchedText || ""),
+      piiType: String(blocked.piiType || ""),
+      maskedValue: String(blocked.maskedValue || ""),
+      warningText: blocked.maskedValue
+        ? `Blocked • ${String(blocked.piiType || "PII").toUpperCase()} Detected • ${blocked.maskedValue}`
+        : `Blocked • ${String(blocked.piiType || "PII").toUpperCase()} Detected`,
+    };
+  }
+
+  const warning = evaluation.find((item) => item.detected && item.action === "warn");
+  if (warning) {
+    return {
+      tone: "warn",
+      label: "Warning",
+      blocked: false,
+      policyName: warning.name,
+      confidence: getConfidence(warning),
+      matchedText: String(warning.matchedText || ""),
+      piiType: String(warning.piiType || ""),
+      maskedValue: String(warning.maskedValue || ""),
+      warningText: warning.maskedValue
+        ? `Warning • ${String(warning.piiType || "PII").toUpperCase()} Detected • ${warning.maskedValue}`
+        : `Warning • ${String(warning.piiType || "PII").toUpperCase()} Detected`,
+    };
+  }
+
+  const flagged = evaluation.find((item) => item.detected && item.action === "flag");
+  if (flagged) {
+    return {
+      tone: "warn",
+      label: "Flagged",
+      blocked: false,
+      policyName: flagged.name,
+      confidence: getConfidence(flagged),
+      matchedText: String(flagged.matchedText || ""),
+      piiType: String(flagged.piiType || ""),
+      maskedValue: String(flagged.maskedValue || ""),
+      warningText: flagged.maskedValue
+        ? `Flagged • ${String(flagged.piiType || "PII").toUpperCase()} Detected • ${flagged.maskedValue}`
+        : `Flagged • ${String(flagged.piiType || "PII").toUpperCase()} Detected`,
+    };
+  }
+
+  return {
+    tone: "safe",
+    label: "Safe",
+    blocked: false,
+    policyName: "",
+    confidence: 0,
+    matchedText: "",
+    piiType: "",
+    maskedValue: "",
+    warningText: "",
+  };
+}
+
+function ensureRealtimePolicyRuntimeUi() {
+  if (realtimePolicyRuntimeUi?.host && document.contains(realtimePolicyRuntimeUi.host)) {
+    return realtimePolicyRuntimeUi;
+  }
+
+  const host = document.createElement("div");
+  host.id = POLICY_RUNTIME_UI_ID;
+  host.style.position = "fixed";
+  host.style.left = "0";
+  host.style.top = "0";
+  host.style.zIndex = FLOATING_Z_INDEX;
+  host.style.pointerEvents = "none";
+  host.style.display = "none";
+  host.style.maxWidth = "min(92vw, 360px)";
+
+  host.innerHTML = `
+    <div style="display:grid;gap:6px;align-items:start;pointer-events:auto;">
+      <div data-policy-badge style="display:inline-flex;align-items:center;gap:6px;border-radius:999px;border:1px solid rgba(22,163,74,0.32);background:rgba(22,163,74,0.16);padding:6px 10px;font-size:11px;font-weight:700;color:#bbf7d0;box-shadow:0 8px 26px rgba(0,0,0,0.35);font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,sans-serif;">Policy: Safe</div>
+      <div data-policy-warning style="display:none;max-width:320px;border-radius:10px;border:1px solid rgba(245,158,11,0.36);background:rgba(245,158,11,0.16);padding:8px 10px;font-size:12px;font-weight:600;color:#fde68a;box-shadow:0 8px 26px rgba(0,0,0,0.35);font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,sans-serif;"></div>
+      <div data-policy-mask-row style="display:none;align-items:center;gap:8px;max-width:340px;border-radius:10px;border:1px solid rgba(148,163,184,0.3);background:rgba(15,23,42,0.86);padding:8px 10px;font-size:11px;color:#cbd5e1;box-shadow:0 8px 26px rgba(0,0,0,0.35);font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,sans-serif;">
+        <button data-policy-mask-btn type="button" style="border:1px solid rgba(255,255,255,0.2);background:rgba(255,255,255,0.08);color:#e2e8f0;border-radius:8px;padding:5px 8px;font-size:11px;font-weight:700;cursor:pointer;">Add Mask</button>
+        <span data-policy-mask-text style="display:none;word-break:break-word;"></span>
+      </div>
+    </div>
+  `;
+
+  document.documentElement.appendChild(host);
+
+  realtimePolicyRuntimeUi = {
+    host,
+    badge: host.querySelector("[data-policy-badge]"),
+    warning: host.querySelector("[data-policy-warning]"),
+    maskRow: host.querySelector("[data-policy-mask-row]"),
+    maskBtn: host.querySelector("[data-policy-mask-btn]"),
+    maskText: host.querySelector("[data-policy-mask-text]"),
+  };
+
+  realtimePolicyRuntimeUi.maskBtn?.addEventListener("click", () => {
+    if (!realtimePolicyActiveInput || !realtimePolicyLastState) return;
+
+    const inputEl = normalizePromptInputElement(realtimePolicyActiveInput);
+    if (!inputEl) return;
+
+    const originalText = readPromptInputValue(inputEl);
+
+    const matchedText = realtimePolicyLastState.matchedText || "";
+    const extractedValue = extractKeywordSensitiveValue(
+      originalText,
+      matchedText.toLowerCase()
+    );
+
+    const valueToReplace =
+      extractedValue && extractedValue.length > 4
+        ? extractedValue
+        : matchedText;
+
+    if (!valueToReplace) return;
+
+    const masked =
+      maskSensitiveValue(valueToReplace, realtimePolicyLastState.piiType) ||
+      genericMask(valueToReplace);
+
+    const updatedText = originalText.replace(valueToReplace, masked);
+
+    // Apply to input
+    if (inputEl instanceof HTMLTextAreaElement || inputEl instanceof HTMLInputElement) {
+      inputEl.value = updatedText;
+    } else {
+      inputEl.innerText = updatedText;
+    }
+
+    // Trigger input event so UI updates
+    inputEl.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+
+  return realtimePolicyRuntimeUi;
+}
+
+function updateRealtimePolicyButton() {
+  if (!overlayElements?.policyModeBtn) {
+    return;
+  }
+
+  overlayElements.policyModeBtn.textContent = realtimePolicyModeEnabled ? "Policy: ON" : "Policy: OFF";
+  overlayElements.policyModeBtn.dataset.enabled = realtimePolicyModeEnabled ? "true" : "false";
+}
+
+function positionRealtimePolicyUi(inputElement) {
+  const ui = ensureRealtimePolicyRuntimeUi();
+  const normalized = normalizePromptInputElement(inputElement);
+  if (!normalized) {
+    ui.host.style.display = "none";
+    return;
+  }
+
+  const rect = normalized.getBoundingClientRect();
+  const panelRect = ui.host.getBoundingClientRect();
+  const panelWidth = panelRect.width || 320;
+  const panelHeight = panelRect.height || 76;
+  const viewportWidth = window.innerWidth;
+  const viewportHeight = window.innerHeight;
+
+  const desiredLeft = rect.left;
+  const clampedLeft = Math.max(8, Math.min(desiredLeft, viewportWidth - panelWidth - 8));
+  const canPlaceAbove = rect.top - panelHeight - 8 >= 8;
+  const desiredTop = canPlaceAbove ? rect.top - panelHeight - 8 : rect.bottom + 8;
+  const clampedTop = Math.max(8, Math.min(desiredTop, viewportHeight - panelHeight - 8));
+
+  ui.host.style.left = `${clampedLeft}px`;
+  ui.host.style.top = `${clampedTop}px`;
+  ui.host.style.display = realtimePolicyModeEnabled ? "block" : "none";
+}
+
+function renderRealtimePolicyState(state) {
+  const ui = ensureRealtimePolicyRuntimeUi();
+  realtimePolicyLastState = state || null;
+  if (!realtimePolicyModeEnabled) {
+    ui.host.style.display = "none";
+    return;
+  }
+
+  const toneStyles = {
+    safe: {
+      border: "rgba(22,163,74,0.32)",
+      bg: "rgba(22,163,74,0.16)",
+      color: "#bbf7d0",
+    },
+    warn: {
+      border: "rgba(245,158,11,0.32)",
+      bg: "rgba(245,158,11,0.16)",
+      color: "#fde68a",
+    },
+    danger: {
+      border: "rgba(220,38,38,0.32)",
+      bg: "rgba(220,38,38,0.16)",
+      color: "#fecaca",
+    },
+  };
+
+  const tone = toneStyles[state?.tone] || toneStyles.safe;
+  ui.badge.style.borderColor = tone.border;
+  ui.badge.style.background = tone.bg;
+  ui.badge.style.color = tone.color;
+  const confidencePct = Math.round(Math.max(0, Math.min(1, Number(state?.confidence || 0))) * 100);
+  ui.badge.textContent = `Policy: ${state?.label || "Safe"}${confidencePct >= 1 ? ` • ${confidencePct}%` : ""}`;
+
+  if (state?.warningText) {
+    ui.warning.style.display = "block";
+    ui.warning.textContent = state.warningText;
+  } else {
+    ui.warning.style.display = "none";
+    ui.warning.textContent = "";
+  }
+
+  const matchedText = String(state?.matchedText || "");
+  const normalizedMatchedText = matchedText.trim().toLowerCase();
+  const isKeywordOnlyMatch = normalizedMatchedText === "api key"
+    || normalizedMatchedText === "password"
+    || normalizedMatchedText === "secret";
+  const activePromptText = readPromptInputValue(realtimePolicyActiveInput);
+  const extractedKeywordValue = isKeywordOnlyMatch
+    ? extractKeywordSensitiveValue(activePromptText, normalizedMatchedText)
+    : "";
+
+  if (isKeywordOnlyMatch && !extractedKeywordValue) {
+    state.maskedValue = "";
+  } else if (extractedKeywordValue) {
+    state.maskedValue = maskSensitiveValue(extractedKeywordValue, state?.piiType || "")
+      || genericMask(extractedKeywordValue);
+  } else {
+    const valueToMask = extractedKeywordValue && extractedKeywordValue.length > 4
+      ? extractedKeywordValue
+      : (!isKeywordOnlyMatch ? matchedText : "");
+
+    if (valueToMask) {
+      const fallbackMask = maskSensitiveValue(valueToMask, state?.piiType || "") || genericMask(valueToMask);
+      state.maskedValue = fallbackMask;
+    } else {
+      state.maskedValue = "";
+    }
+  }
+
+  const resolvedMaskedValue = String(state?.maskedValue || "");
+  const shouldShowMaskUi = !!state.maskedValue && state.maskedValue.length > 4;
+
+  if (shouldShowMaskUi) {
+    realtimePolicyMaskedPreview = resolvedMaskedValue;
+    ui.maskRow.style.display = "inline-flex";
+    ui.maskBtn.textContent = realtimePolicyShowMaskedPreview ? "Hide Mask" : "Add Mask";
+    ui.maskText.style.display = realtimePolicyShowMaskedPreview ? "inline" : "none";
+    ui.maskText.textContent = realtimePolicyShowMaskedPreview ? resolvedMaskedValue : "";
+  } else {
+    realtimePolicyMaskedPreview = "";
+    realtimePolicyShowMaskedPreview = false;
+    ui.maskRow.style.display = "none";
+    ui.maskText.style.display = "none";
+    ui.maskText.textContent = "";
+  }
+}
+
+async function runRealtimePolicyEvaluation(inputElement) {
+  const normalized = normalizePromptInputElement(inputElement);
+  if (!normalized || !realtimePolicyModeEnabled) {
+    realtimePolicyBlocked = false;
+    realtimePolicyBlockedPolicy = "";
+    realtimePolicyMaskedPreview = "";
+    realtimePolicyShowMaskedPreview = false;
+    renderRealtimePolicyState({ tone: "safe", label: "Safe", warningText: "" });
+    return;
+  }
+
+  const promptText = readPromptInputValue(normalized);
+  if (!promptText) {
+    realtimePolicyBlocked = false;
+    realtimePolicyBlockedPolicy = "";
+    realtimePolicyLastEvaluation = [];
+    realtimePolicyMaskedPreview = "";
+    realtimePolicyShowMaskedPreview = false;
+    renderRealtimePolicyState({ tone: "safe", label: "Safe", warningText: "" });
+    positionRealtimePolicyUi(normalized);
+    return;
+  }
+
+  const policies = await loadRealtimePolicies();
+  const evaluation = evaluateRealtimePolicies(promptText, policies);
+  const state = getRealtimePolicyState(evaluation);
+  realtimePolicyLastEvaluation = evaluation;
+  realtimePolicyBlocked = state.blocked;
+  realtimePolicyBlockedPolicy = state.policyName || "";
+
+  renderRealtimePolicyState(state);
+  positionRealtimePolicyUi(normalized);
+}
+
+function scheduleRealtimePolicyEvaluation(inputElement) {
+  if (realtimePolicyDebounceTimer) {
+    clearTimeout(realtimePolicyDebounceTimer);
+  }
+
+  realtimePolicyDebounceTimer = setTimeout(() => {
+    realtimePolicyDebounceTimer = null;
+    runRealtimePolicyEvaluation(inputElement).catch(() => {
+      realtimePolicyBlocked = false;
+      realtimePolicyBlockedPolicy = "";
+    });
+  }, REALTIME_POLICY_DEBOUNCE_MS);
+}
+
 function optimizePromptText(rawPrompt) {
   const prompt = quickCleanText(rawPrompt || "");
   if (!prompt) {
@@ -1740,6 +2621,12 @@ function initPromptOptimizerWidget() {
     if (!lastOptimizedValue) {
       optimizedBox.textContent = "Click Optimize now to improve this prompt.";
     }
+
+    realtimePolicyActiveInput = candidate;
+    positionRealtimePolicyUi(candidate);
+    if (realtimePolicyModeEnabled) {
+      scheduleRealtimePolicyEvaluation(candidate);
+    }
   };
 
   const handleFocusOut = (event) => {
@@ -1791,9 +2678,74 @@ function initPromptOptimizerWidget() {
   document.addEventListener("input", handleInput, { capture: true, signal: listenersAbortController.signal });
   document.addEventListener("focusout", handleFocusOut, { capture: true, signal: listenersAbortController.signal });
 
+  document.addEventListener("keydown", (event) => {
+    if (!realtimePolicyModeEnabled || !realtimePolicyBlocked) {
+      return;
+    }
+
+    const candidate = normalizePromptInputElement(event.target);
+    if (!candidate || !isPromptInputElement(candidate)) {
+      return;
+    }
+
+    // Block direct submit on Enter while still allowing Shift+Enter for new lines.
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      event.stopPropagation();
+      renderRealtimePolicyState({
+        tone: "danger",
+        label: "Blocked",
+        warningText: `Blocked by policy: ${realtimePolicyBlockedPolicy || "Policy rule"}`,
+      });
+    }
+  }, { capture: true, signal: listenersAbortController.signal });
+
+  document.addEventListener("click", (event) => {
+    if (!realtimePolicyModeEnabled || !realtimePolicyBlocked) {
+      return;
+    }
+
+    const target = event.target instanceof Element ? event.target : null;
+    if (!target) {
+      return;
+    }
+
+    const submitTrigger = target.closest("button[type='submit'], [aria-label*='send' i], [data-testid*='send' i]");
+    if (!submitTrigger) {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+    renderRealtimePolicyState({
+      tone: "danger",
+      label: "Blocked",
+      warningText: `Blocked by policy: ${realtimePolicyBlockedPolicy || "Policy rule"}`,
+    });
+  }, { capture: true, signal: listenersAbortController.signal });
+
+  window.addEventListener("scroll", () => {
+    if (realtimePolicyActiveInput && realtimePolicyModeEnabled) {
+      positionRealtimePolicyUi(realtimePolicyActiveInput);
+    }
+  }, { capture: true, signal: listenersAbortController.signal });
+
+  window.addEventListener("resize", () => {
+    if (realtimePolicyActiveInput && realtimePolicyModeEnabled) {
+      positionRealtimePolicyUi(realtimePolicyActiveInput);
+    }
+  }, { signal: listenersAbortController.signal });
+
   const inputLifecycleObserver = new MutationObserver(() => {
     if (activeInput && !document.contains(activeInput)) {
       activeInput = null;
+    }
+
+    if (realtimePolicyActiveInput && !document.contains(realtimePolicyActiveInput)) {
+      realtimePolicyActiveInput = null;
+      realtimePolicyBlocked = false;
+      realtimePolicyBlockedPolicy = "";
+      renderRealtimePolicyState({ tone: "safe", label: "Safe", warningText: "" });
     }
   });
   inputLifecycleObserver.observe(document.body || document.documentElement, {
@@ -1817,6 +2769,7 @@ function initPromptOptimizerWidget() {
 
 async function bootstrap() {
   initPromptOptimizerWidget();
+  realtimePolicyModeEnabled = await loadRealtimePolicyMode();
 
   runtimeGuardEnabled = isChatLikePage();
   if (!runtimeGuardEnabled) {
@@ -1825,6 +2778,7 @@ async function bootstrap() {
   }
 
   ensureAnalyzeFab();
+  updateRealtimePolicyButton();
   currentSnapshot = buildConversationSnapshot();
   addSnapshotToHistory(currentSnapshot);
 
