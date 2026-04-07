@@ -6,6 +6,8 @@ const SAMPLE_RESPONSE =
   "You can keep user data forever and share it with partners. Contact admin@company.com for details.";
 const AUDIT_LOG_KEY = "safenet_audit_logs";
 const AUDIT_LOG_PARAM = "safenetAuditLogs";
+const TRANSFER_PAYLOAD_PARAM = "safenetPayload";
+const TRANSFER_HASH_KEY = "safenetTransfer";
 const POLICIES_KEY = "safenet_policies";
 
 function riskMeta(risk) {
@@ -143,10 +145,46 @@ function detectJailbreak(promptText, responseText) {
   return { detected: false, reason: "No known jailbreak patterns matched." };
 }
 
+function readTransferBundleFromHash() {
+  try {
+    const rawHash = String(window.location.hash || "").replace(/^#/, "");
+    if (!rawHash) {
+      return null;
+    }
+
+    const hashParams = new URLSearchParams(rawHash);
+    const encoded = hashParams.get(TRANSFER_HASH_KEY);
+    if (!encoded) {
+      return null;
+    }
+
+    const parsed = JSON.parse(decodeURIComponent(encoded));
+    const payload = parsed?.payload || null;
+    const logs = Array.isArray(parsed?.logs) ? parsed.logs : [];
+
+    return { payload, logs };
+  } catch {
+    return null;
+  }
+}
+
 function readExtensionTransferPayload() {
+  const hashTransfer = readTransferBundleFromHash();
+  if (hashTransfer?.payload) {
+    const prompt = String(hashTransfer.payload?.prompt || "").trim();
+    const response = String(hashTransfer.payload?.response || "").trim();
+    const timestamp = Number(hashTransfer.payload?.timestamp || Date.now());
+
+    if (!prompt && !response) {
+      return null;
+    }
+
+    return { prompt, response, timestamp };
+  }
+
   try {
     const params = new URLSearchParams(window.location.search);
-    const payloadText = params.get("safenetPayload");
+    const payloadText = params.get(TRANSFER_PAYLOAD_PARAM);
     if (!payloadText) {
       return null;
     }
@@ -167,6 +205,11 @@ function readExtensionTransferPayload() {
 }
 
 function readAuditLogsFromUrl() {
+  const hashTransfer = readTransferBundleFromHash();
+  if (Array.isArray(hashTransfer?.logs) && hashTransfer.logs.length) {
+    return hashTransfer.logs;
+  }
+
   try {
     const params = new URLSearchParams(window.location.search);
     const logsText = params.get(AUDIT_LOG_PARAM);
@@ -183,10 +226,15 @@ function readAuditLogsFromUrl() {
 
 function clearTransferParams() {
   const params = new URLSearchParams(window.location.search);
-  params.delete("safenetPayload");
+  params.delete(TRANSFER_PAYLOAD_PARAM);
   params.delete(AUDIT_LOG_PARAM);
+
+  const hashParams = new URLSearchParams(String(window.location.hash || "").replace(/^#/, ""));
+  hashParams.delete(TRANSFER_HASH_KEY);
+
   const nextSearch = params.toString();
-  const nextUrl = `${window.location.pathname}${nextSearch ? `?${nextSearch}` : ""}${window.location.hash}`;
+  const nextHash = hashParams.toString();
+  const nextUrl = `${window.location.pathname}${nextSearch ? `?${nextSearch}` : ""}${nextHash ? `#${nextHash}` : ""}`;
   window.history.replaceState({}, "", nextUrl);
 }
 

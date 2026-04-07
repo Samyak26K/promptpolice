@@ -2,30 +2,44 @@
   all: initial;
 }
 
+:host * {
+  box-sizing: border-box;
+}
+
 .safenet-panel {
-  width: min(380px, calc(100vw - 24px));
-  max-height: min(80vh, 760px);
+  width: min(390px, calc(100vw - 20px));
+  max-height: min(82vh, 760px);
   overflow: hidden;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 18px;
-  background: linear-gradient(180deg, rgba(5, 12, 26, 0.96), rgba(15, 23, 42, 0.96));
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  border-radius: 14px;
+  background: linear-gradient(180deg, rgba(7, 14, 30, 0.97), rgba(15, 23, 42, 0.97));
   color: #e5eefc;
-  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.45);
+  box-shadow: 0 20px 56px rgba(2, 6, 23, 0.52);
   backdrop-filter: blur(16px);
-  font-family: Inter, "Segoe UI", system-ui, -apple-system, sans-serif;
+  font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+  transition: box-shadow 180ms ease, transform 180ms ease;
 }
 
 .safenet-panel.safenet-collapsed {
-  width: 320px;
+  width: min(332px, calc(100vw - 20px));
+}
+
+.safenet-panel:hover {
+  box-shadow: 0 24px 64px rgba(2, 6, 23, 0.58);
 }
 
 .safenet-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
-  padding: 12px 12px 10px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 11px 12px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.18);
+  background: linear-gradient(180deg, rgba(15, 23, 42, 0.98), rgba(15, 23, 42, 0.9));
+  position: sticky;
+  top: 0;
+  z-index: 5;
   cursor: grab;
   user-select: none;
 }
@@ -35,47 +49,65 @@
 }
 
 .safenet-title-block {
+  flex: 1 1 140px;
   min-width: 0;
 }
 
 .safenet-title {
-  font-size: 14px;
+  font-size: 15px;
   font-weight: 800;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.02em;
 }
 
 .safenet-subtitle {
-  margin-top: 2px;
+  margin-top: 3px;
   font-size: 11px;
-  color: rgba(229, 238, 252, 0.72);
+  color: rgba(226, 232, 240, 0.76);
 }
 
 .safenet-header-actions {
   display: flex;
-  gap: 6px;
-  flex-shrink: 0;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 7px;
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .safenet-icon-button {
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(148, 163, 184, 0.3);
+  background: rgba(148, 163, 184, 0.12);
   color: #f8fafc;
   border-radius: 10px;
   padding: 7px 10px;
   font-size: 11px;
   font-weight: 700;
+  line-height: 1;
+  white-space: nowrap;
   cursor: pointer;
+  transition: transform 140ms ease, background-color 160ms ease, border-color 160ms ease, opacity 160ms ease;
 }
 
 .safenet-icon-button:hover {
-  background: rgba(255, 255, 255, 0.11);
+  background: rgba(148, 163, 184, 0.24);
+  border-color: rgba(148, 163, 184, 0.45);
+}
+
+.safenet-icon-button:active {
+  transform: translateY(1px) scale(0.98);
+}
+
+.safenet-icon-button:focus-visible {
+  outline: 2px solid rgba(56, 189, 248, 0.8);
+  outline-offset: 1px;
 }
 
 .safenet-body {
   display: grid;
-  gap: 12px;
+  gap: 10px;
   padding: 12px;
-  max-height: calc(80vh - 62px);
+  max-height: calc(82vh - 58px);
   overflow: auto;
 }
 
@@ -86,9 +118,9 @@
 }
 
 .safenet-metric {
-  border-radius: 14px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  background: rgba(2, 6, 23, 0.52);
+  border-radius: 12px;
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  background: linear-gradient(180deg, rgba(2, 6, 23, 0.56), rgba(2, 6, 23, 0.4));
   padding: 10px;
 }
 
@@ -101,15 +133,15 @@
 
 .safenet-value {
   margin-top: 6px;
-  font-size: 24px;
+  font-size: 22px;
   font-weight: 800;
   line-height: 1;
 }
 
 .safenet-section {
-  border-radius: 14px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  background: rgba(2, 6, 23, 0.44);
+  border-radius: 12px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  background: rgba(2, 6, 23, 0.5);
   padding: 10px;
 }
 
@@ -174,7 +206,7 @@
 }
 
 .safenet-badge-quiet {
-  background: rgba(15, 23, 42, 0.82);
+  background: rgba(51, 65, 85, 0.5);
   color: #dbeafe;
 }
 
@@ -204,8 +236,8 @@
 }
 
 .tone-neutral {
-  border-color: rgba(255, 255, 255, 0.1);
-  background: rgba(15, 23, 42, 0.82);
+  border-color: rgba(148, 163, 184, 0.28);
+  background: rgba(71, 85, 105, 0.3);
   color: #dbeafe;
 }
 
@@ -225,7 +257,7 @@
   max-height: 100px;
   overflow: auto;
   border-radius: 12px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(148, 163, 184, 0.16);
   background: rgba(2, 6, 23, 0.56);
   padding: 10px;
   font-size: 12px;
@@ -281,4 +313,52 @@
 .safenet-snapshot-text::-webkit-scrollbar-thumb {
   border-radius: 999px;
   background: rgba(148, 163, 184, 0.35);
+}
+
+@media (max-width: 640px) {
+  .safenet-panel,
+  .safenet-panel.safenet-collapsed {
+    width: calc(100vw - 16px);
+    max-height: 72vh;
+  }
+
+  .safenet-header {
+    padding: 10px;
+  }
+
+  .safenet-header-actions {
+    gap: 6px;
+  }
+
+  .safenet-icon-button {
+    padding: 6px 8px;
+    font-size: 10px;
+  }
+
+  .safenet-body {
+    max-height: calc(72vh - 56px);
+    padding: 10px;
+  }
+}
+
+@media (max-width: 430px) {
+  .safenet-header {
+    gap: 8px;
+    align-items: flex-start;
+  }
+
+  .safenet-title {
+    font-size: 14px;
+  }
+
+  .safenet-header-actions {
+    width: 100%;
+    justify-content: flex-start;
+    gap: 6px;
+  }
+
+  .safenet-icon-button {
+    padding: 6px 8px;
+    font-size: 10px;
+  }
 }

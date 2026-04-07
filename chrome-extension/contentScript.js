@@ -7,8 +7,11 @@ const STABILIZE_MS = 1000;
 const DASHBOARD_BASE_URL = "http://localhost:5173/";
 const DASHBOARD_TRANSFER_PARAM = "safenetPayload";
 const DASHBOARD_LOGS_PARAM = "safenetAuditLogs";
+const DASHBOARD_TRANSFER_HASH_KEY = "safenetTransfer";
 const AUDIT_LOG_KEY = "safenet_audit_logs";
 const AUDIT_LOG_LIMIT = 50;
+const DASHBOARD_TRANSFER_LOG_LIMIT = 15;
+const DASHBOARD_TRANSFER_TEXT_LIMIT = 320;
 const REALTIME_POLICY_MODE_KEY = "safenet_realtime_policy_mode";
 const POLICY_STORAGE_KEY = "safenet_policies";
 const REALTIME_POLICY_DEBOUNCE_MS = 400;
@@ -164,6 +167,22 @@ const CHAT_HOST_HINTS = [
   "copilot",
   "poe",
 ];
+
+function isExtensionContextValid() {
+  try {
+    return Boolean(globalThis.chrome?.runtime?.id);
+  } catch {
+    return false;
+  }
+}
+
+function canUseStorageApi() {
+  try {
+    return Boolean(globalThis.chrome?.storage?.local) && isExtensionContextValid();
+  } catch {
+    return false;
+  }
+}
 
 function normalizeWhitespace(text) {
   return String(text || "")
@@ -608,11 +627,12 @@ function ensureFloatingRoot() {
   root.style.display = "flex";
   root.style.flexDirection = "column";
   root.style.alignItems = "flex-end";
-  root.style.gap = "14px";
-  root.style.maxHeight = "calc(100vh - 24px)";
-  root.style.maxWidth = "min(94vw, 420px)";
+  root.style.gap = "10px";
+  root.style.maxHeight = "calc(100vh - 20px)";
+  root.style.maxWidth = "min(94vw, 430px)";
   root.style.overflowY = "auto";
   root.style.pointerEvents = "none";
+  root.style.padding = "4px";
 
   document.documentElement.appendChild(root);
   return root;
@@ -716,14 +736,20 @@ function ensureOverlayRoot() {
   styleLink.textContent = "";
   overlayShadow.appendChild(styleLink);
 
-  fetch(chrome.runtime.getURL("overlay.css"))
-    .then((response) => response.text())
-    .then((cssText) => {
-      styleLink.textContent = cssText;
-    })
-    .catch(() => {
-      styleLink.textContent = "";
-    });
+  try {
+    if (isExtensionContextValid()) {
+      fetch(chrome.runtime.getURL("overlay.css"))
+        .then((response) => response.text())
+        .then((cssText) => {
+          styleLink.textContent = cssText;
+        })
+        .catch(() => {
+          styleLink.textContent = "";
+        });
+    }
+  } catch {
+    styleLink.textContent = "";
+  }
 
   ensureFloatingRoot().appendChild(host);
   overlayElements = {
@@ -814,16 +840,36 @@ function ensureAnalyzeFab() {
   button.textContent = "Analyze";
   button.style.position = "relative";
   button.style.pointerEvents = "auto";
-  button.style.border = "1px solid #1e3a8a";
-  button.style.background = "rgb(6 182 212 / var(--tw-bg-opacity, 1))";
-  button.style.color = "#000000";
+  button.style.border = "1px solid rgba(56, 189, 248, 0.7)";
+  button.style.background = "linear-gradient(180deg, rgba(34,211,238,0.95), rgba(6,182,212,0.95))";
+  button.style.color = "#06202b";
   button.style.fontSize = "12px";
   button.style.fontWeight = "700";
   button.style.padding = "8px 12px";
-  button.style.borderRadius = "999px";
+  button.style.borderRadius = "12px";
   button.style.cursor = "pointer";
-  button.style.boxShadow = "0 8px 20px rgba(0,0,0,0.35)";
+  button.style.boxShadow = "0 10px 24px rgba(2,6,23,0.35)";
   button.style.fontFamily = "ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif";
+  button.style.transition = "transform 140ms ease, filter 160ms ease, box-shadow 160ms ease";
+
+  button.addEventListener("mouseenter", () => {
+    button.style.filter = "brightness(1.04)";
+    button.style.boxShadow = "0 14px 28px rgba(2,6,23,0.4)";
+  });
+
+  button.addEventListener("mouseleave", () => {
+    button.style.filter = "brightness(1)";
+    button.style.boxShadow = "0 10px 24px rgba(2,6,23,0.35)";
+    button.style.transform = "translateY(0)";
+  });
+
+  button.addEventListener("mousedown", () => {
+    button.style.transform = "translateY(1px) scale(0.98)";
+  });
+
+  button.addEventListener("mouseup", () => {
+    button.style.transform = "translateY(0) scale(1)";
+  });
 
   button.addEventListener("click", (event) => {
     event.preventDefault();
@@ -970,22 +1016,30 @@ function appendAuditLog(snapshot, result) {
     platform: String(snapshot?.platform || detectPlatform().name || "generic"),
   };
 
-  if (!globalThis.chrome?.storage?.local) {
+  if (!canUseStorageApi()) {
     return;
   }
 
-  chrome.storage.local.get([AUDIT_LOG_KEY], (stored) => {
-    if (chrome.runtime?.lastError) {
-      return;
-    }
+  try {
+    chrome.storage.local.get([AUDIT_LOG_KEY], (stored) => {
+      if (chrome.runtime?.lastError) {
+        return;
+      }
 
-    const existingLogs = Array.isArray(stored?.[AUDIT_LOG_KEY]) ? stored[AUDIT_LOG_KEY] : [];
-    const nextLogs = [entry, ...existingLogs].slice(0, AUDIT_LOG_LIMIT);
+      const existingLogs = Array.isArray(stored?.[AUDIT_LOG_KEY]) ? stored[AUDIT_LOG_KEY] : [];
+      const nextLogs = [entry, ...existingLogs].slice(0, AUDIT_LOG_LIMIT);
 
-    chrome.storage.local.set({ [AUDIT_LOG_KEY]: nextLogs }, () => {
-      void chrome.runtime?.lastError;
+      try {
+        chrome.storage.local.set({ [AUDIT_LOG_KEY]: nextLogs }, () => {
+          void chrome.runtime?.lastError;
+        });
+      } catch {
+        // Ignore writes when extension context is stale.
+      }
     });
-  });
+  } catch {
+    // Ignore reads when extension context is stale.
+  }
 }
 
 function updateHistoryControls() {
@@ -1039,21 +1093,49 @@ function addSnapshotToHistory(snapshot, result, options = {}) {
 
 function getAuditLogsForDashboard() {
   return new Promise((resolve) => {
-    if (!globalThis.chrome?.storage?.local) {
+    if (!canUseStorageApi()) {
       resolve([]);
       return;
     }
 
-    chrome.storage.local.get([AUDIT_LOG_KEY], (stored) => {
-      if (chrome.runtime?.lastError) {
-        resolve([]);
-        return;
-      }
+    try {
+      chrome.storage.local.get([AUDIT_LOG_KEY], (stored) => {
+        if (chrome.runtime?.lastError) {
+          resolve([]);
+          return;
+        }
 
-      const logs = Array.isArray(stored?.[AUDIT_LOG_KEY]) ? stored[AUDIT_LOG_KEY] : [];
-      resolve(logs.slice(0, AUDIT_LOG_LIMIT));
-    });
+        const logs = Array.isArray(stored?.[AUDIT_LOG_KEY]) ? stored[AUDIT_LOG_KEY] : [];
+        resolve(logs.slice(0, AUDIT_LOG_LIMIT));
+      });
+    } catch {
+      resolve([]);
+    }
   });
+}
+
+function trimTransferText(text) {
+  return String(text || "").slice(0, DASHBOARD_TRANSFER_TEXT_LIMIT);
+}
+
+function simplifyLogForDashboardTransfer(log) {
+  const riskLevel = String(
+    log?.result?.summary?.risk_level ||
+    log?.result?.risk ||
+    "unknown"
+  ).toLowerCase();
+
+  return {
+    prompt: trimTransferText(log?.prompt || ""),
+    response: trimTransferText(log?.response || ""),
+    timestamp: Number(log?.timestamp || Date.now()),
+    platform: String(log?.platform || ""),
+    result: {
+      summary: {
+        risk_level: riskLevel,
+      },
+    },
+  };
 }
 
 async function buildDashboardUrlWithSnapshot(snapshot) {
@@ -1064,11 +1146,18 @@ async function buildDashboardUrlWithSnapshot(snapshot) {
     response: normalizedSnapshot?.response || "",
     timestamp: Date.now(),
   };
-  const logs = await getAuditLogsForDashboard();
+  const logs = (await getAuditLogsForDashboard())
+    .slice(0, DASHBOARD_TRANSFER_LOG_LIMIT)
+    .map(simplifyLogForDashboardTransfer);
+
+  const transferPayload = {
+    payload,
+    logs,
+  };
 
   const url = new URL(DASHBOARD_BASE_URL);
-  url.searchParams.set(DASHBOARD_TRANSFER_PARAM, JSON.stringify(payload));
-  url.searchParams.set(DASHBOARD_LOGS_PARAM, JSON.stringify(logs));
+  const encodedTransfer = encodeURIComponent(JSON.stringify(transferPayload));
+  url.hash = `${DASHBOARD_TRANSFER_HASH_KEY}=${encodedTransfer}`;
   return url.toString();
 }
 
@@ -1483,53 +1572,65 @@ function readPromptInputValue(element) {
 
 function loadRealtimePolicyMode() {
   return new Promise((resolve) => {
-    if (!globalThis.chrome?.storage?.local) {
+    if (!canUseStorageApi()) {
       resolve(false);
       return;
     }
 
-    chrome.storage.local.get([REALTIME_POLICY_MODE_KEY], (stored) => {
-      if (chrome.runtime?.lastError) {
-        resolve(false);
-        return;
-      }
+    try {
+      chrome.storage.local.get([REALTIME_POLICY_MODE_KEY], (stored) => {
+        if (chrome.runtime?.lastError) {
+          resolve(false);
+          return;
+        }
 
-      resolve(Boolean(stored?.[REALTIME_POLICY_MODE_KEY]));
-    });
+        resolve(Boolean(stored?.[REALTIME_POLICY_MODE_KEY]));
+      });
+    } catch {
+      resolve(false);
+    }
   });
 }
 
 function saveRealtimePolicyMode(value) {
-  if (!globalThis.chrome?.storage?.local) {
+  if (!canUseStorageApi()) {
     return;
   }
 
-  chrome.storage.local.set({ [REALTIME_POLICY_MODE_KEY]: Boolean(value) }, () => {
-    void chrome.runtime?.lastError;
-  });
+  try {
+    chrome.storage.local.set({ [REALTIME_POLICY_MODE_KEY]: Boolean(value) }, () => {
+      void chrome.runtime?.lastError;
+    });
+  } catch {
+    // Ignore writes when extension context is stale.
+  }
 }
 
 function loadRealtimePolicies() {
   return new Promise((resolve) => {
-    if (!globalThis.chrome?.storage?.local) {
+    if (!canUseStorageApi()) {
       resolve(DEFAULT_REALTIME_POLICIES);
       return;
     }
 
-    chrome.storage.local.get([POLICY_STORAGE_KEY], (stored) => {
-      if (chrome.runtime?.lastError) {
-        resolve(DEFAULT_REALTIME_POLICIES);
-        return;
-      }
+    try {
+      chrome.storage.local.get([POLICY_STORAGE_KEY], (stored) => {
+        if (chrome.runtime?.lastError) {
+          resolve(DEFAULT_REALTIME_POLICIES);
+          return;
+        }
 
-      const candidate = stored?.[POLICY_STORAGE_KEY];
-      if (!Array.isArray(candidate) || candidate.length === 0) {
-        resolve(DEFAULT_REALTIME_POLICIES);
-        return;
-      }
+        const candidate = stored?.[POLICY_STORAGE_KEY];
+        if (!Array.isArray(candidate) || candidate.length === 0) {
+          resolve(DEFAULT_REALTIME_POLICIES);
+          return;
+        }
 
-      resolve(candidate);
-    });
+        resolve(candidate);
+      });
+    } catch {
+      resolve(DEFAULT_REALTIME_POLICIES);
+    }
   });
 }
 
@@ -2059,17 +2160,20 @@ function ensureRealtimePolicyRuntimeUi() {
   host.style.position = "fixed";
   host.style.left = "0";
   host.style.top = "0";
-  host.style.zIndex = FLOATING_Z_INDEX;
+  host.style.zIndex = "2147483644";
   host.style.pointerEvents = "none";
   host.style.display = "none";
   host.style.maxWidth = "min(92vw, 360px)";
+  host.style.opacity = "0";
+  host.style.transform = "translateY(2px)";
+  host.style.transition = "opacity 140ms ease, transform 140ms ease";
 
   host.innerHTML = `
-    <div style="display:grid;gap:6px;align-items:start;pointer-events:auto;">
-      <div data-policy-badge style="display:inline-flex;align-items:center;gap:6px;border-radius:999px;border:1px solid rgba(22,163,74,0.32);background:rgba(22,163,74,0.16);padding:6px 10px;font-size:11px;font-weight:700;color:#bbf7d0;box-shadow:0 8px 26px rgba(0,0,0,0.35);font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,sans-serif;">Policy: Safe</div>
-      <div data-policy-warning style="display:none;max-width:320px;border-radius:10px;border:1px solid rgba(245,158,11,0.36);background:rgba(245,158,11,0.16);padding:8px 10px;font-size:12px;font-weight:600;color:#fde68a;box-shadow:0 8px 26px rgba(0,0,0,0.35);font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,sans-serif;"></div>
-      <div data-policy-mask-row style="display:none;align-items:center;gap:8px;max-width:340px;border-radius:10px;border:1px solid rgba(148,163,184,0.3);background:rgba(15,23,42,0.86);padding:8px 10px;font-size:11px;color:#cbd5e1;box-shadow:0 8px 26px rgba(0,0,0,0.35);font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,sans-serif;">
-        <button data-policy-mask-btn type="button" style="border:1px solid rgba(255,255,255,0.2);background:rgba(255,255,255,0.08);color:#e2e8f0;border-radius:8px;padding:5px 8px;font-size:11px;font-weight:700;cursor:pointer;">Add Mask</button>
+    <div style="display:grid;gap:8px;align-items:start;pointer-events:auto;">
+      <div data-policy-badge style="display:inline-flex;align-items:center;gap:6px;border-radius:999px;border:1px solid rgba(22,163,74,0.32);background:rgba(22,163,74,0.16);padding:7px 11px;font-size:11px;font-weight:700;color:#bbf7d0;box-shadow:0 10px 24px rgba(2,6,23,0.34);font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,sans-serif;">Policy: Safe</div>
+      <div data-policy-warning style="display:none;max-width:320px;border-radius:12px;border:1px solid rgba(245,158,11,0.36);background:rgba(245,158,11,0.14);padding:8px 10px;font-size:12px;font-weight:600;color:#fde68a;box-shadow:0 10px 24px rgba(2,6,23,0.34);font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,sans-serif;"></div>
+      <div data-policy-mask-row style="display:none;align-items:center;gap:8px;max-width:340px;border-radius:12px;border:1px solid rgba(148,163,184,0.32);background:rgba(15,23,42,0.9);padding:8px 10px;font-size:11px;color:#cbd5e1;box-shadow:0 10px 24px rgba(2,6,23,0.34);font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,sans-serif;">
+        <button data-policy-mask-btn type="button" style="border:1px solid rgba(148,163,184,0.38);background:rgba(51,65,85,0.46);color:#e2e8f0;border-radius:9px;padding:6px 9px;font-size:11px;font-weight:700;cursor:pointer;">Add Mask</button>
         <span data-policy-mask-text style="display:none;word-break:break-word;"></span>
       </div>
     </div>
@@ -2152,14 +2256,33 @@ function positionRealtimePolicyUi(inputElement) {
   const viewportHeight = window.innerHeight;
 
   const desiredLeft = rect.left;
-  const clampedLeft = Math.max(8, Math.min(desiredLeft, viewportWidth - panelWidth - 8));
+  let clampedLeft = Math.max(8, Math.min(desiredLeft, viewportWidth - panelWidth - 8));
   const canPlaceAbove = rect.top - panelHeight - 8 >= 8;
   const desiredTop = canPlaceAbove ? rect.top - panelHeight - 8 : rect.bottom + 8;
-  const clampedTop = Math.max(8, Math.min(desiredTop, viewportHeight - panelHeight - 8));
+  let clampedTop = Math.max(8, Math.min(desiredTop, viewportHeight - panelHeight - 8));
+
+  const floatingRootRect = ensureFloatingRoot().getBoundingClientRect();
+  const overlapsFloatingRoot = !(clampedLeft + panelWidth < floatingRootRect.left
+    || clampedLeft > floatingRootRect.right
+    || clampedTop + panelHeight < floatingRootRect.top
+    || clampedTop > floatingRootRect.bottom);
+
+  if (overlapsFloatingRoot) {
+    const moveUpTop = Math.max(8, floatingRootRect.top - panelHeight - 10);
+    const moveLeft = Math.max(8, floatingRootRect.left - panelWidth - 10);
+    if (moveUpTop + panelHeight <= viewportHeight - 8) {
+      clampedTop = moveUpTop;
+    }
+    if (moveLeft + panelWidth <= viewportWidth - 8 && Math.abs(moveLeft - clampedLeft) > 2) {
+      clampedLeft = moveLeft;
+    }
+  }
 
   ui.host.style.left = `${clampedLeft}px`;
   ui.host.style.top = `${clampedTop}px`;
   ui.host.style.display = realtimePolicyModeEnabled ? "block" : "none";
+  ui.host.style.opacity = realtimePolicyModeEnabled ? "1" : "0";
+  ui.host.style.transform = realtimePolicyModeEnabled ? "translateY(0)" : "translateY(2px)";
 }
 
 function renderRealtimePolicyState(state) {
@@ -2354,8 +2477,11 @@ function createPromptOptimizerWidget() {
   host.id = PROMPT_OPTIMIZER_ID;
   host.style.all = "initial";
   host.style.position = "relative";
-  host.style.display = "block";
+  host.style.display = "none";
   host.style.pointerEvents = "auto";
+  host.style.opacity = "0";
+  host.style.transform = "translateY(4px)";
+  host.style.transition = "opacity 160ms ease, transform 160ms ease";
 
   const shadow = host.attachShadow({ mode: "open" });
   const container = document.createElement("div");
@@ -2366,14 +2492,21 @@ function createPromptOptimizerWidget() {
       .po-wrap { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif; color: #e5e7eb; }
       .po-btn {
         border: none;
-        border-radius: 999px;
+        border-radius: 12px;
         padding: 8px 12px;
         font-size: 12px;
         font-weight: 600;
-        background: rgb(6 182 212 / var(--tw-bg-opacity, 1));
-        color: #111827;
+        background: linear-gradient(180deg, rgba(34,211,238,0.95), rgba(6,182,212,0.95));
+        color: #06202b;
         cursor: pointer;
-        box-shadow: 0 6px 20px rgba(0,0,0,0.35);
+        box-shadow: 0 10px 24px rgba(2,6,23,0.35);
+        transition: transform 140ms ease, filter 160ms ease, box-shadow 160ms ease;
+      }
+      .po-btn:hover {
+        filter: brightness(1.04);
+      }
+      .po-btn:active {
+        transform: translateY(1px) scale(0.98);
       }
       .po-panel {
         width: 330px;
@@ -2381,8 +2514,8 @@ function createPromptOptimizerWidget() {
         border-radius: 12px;
         overflow: hidden;
         background: #0b1220;
-        border: 1px solid #1f2937;
-        box-shadow: 0 12px 32px rgba(0,0,0,0.45);
+        border: 1px solid rgba(148,163,184,0.3);
+        box-shadow: 0 14px 30px rgba(2,6,23,0.4);
       }
       .po-hidden { display: none; }
       .po-head {
@@ -2489,6 +2622,8 @@ function initPromptOptimizerWidget() {
 
   const setWidgetVisible = (visible) => {
     ui.host.style.display = visible ? "block" : "none";
+    ui.host.style.opacity = visible ? "1" : "0";
+    ui.host.style.transform = visible ? "translateY(0)" : "translateY(4px)";
     if (!visible) {
       setExpanded(false);
     }
@@ -2617,6 +2752,8 @@ function initPromptOptimizerWidget() {
     activeInput = candidate;
     lastTypingAt = Date.now();
     markInteraction();
+    setWidgetVisible(true);
+    scheduleAutoHide();
     originalBox.textContent = readPromptInputValue(activeInput) || "Start typing in a prompt box...";
     if (!lastOptimizedValue) {
       optimizedBox.textContent = "Click Optimize now to improve this prompt.";
@@ -2799,44 +2936,46 @@ async function bootstrap() {
   });
 }
 
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (message?.type === "SAFENET_GET_CURRENT_SNAPSHOT") {
-    if (!runtimeGuardEnabled && !isChatLikePage()) {
-      sendResponse(null);
+if (isExtensionContextValid() && globalThis.chrome?.runtime?.onMessage?.addListener) {
+  chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    if (message?.type === "SAFENET_GET_CURRENT_SNAPSHOT") {
+      if (!runtimeGuardEnabled && !isChatLikePage()) {
+        sendResponse(null);
+        return false;
+      }
+
+      const snapshot = buildConversationSnapshot();
+      currentSnapshot = snapshot;
+      addSnapshotToHistory(currentSnapshot);
+      sendResponse(snapshot);
       return false;
     }
 
-    const snapshot = buildConversationSnapshot();
-    currentSnapshot = snapshot;
-    addSnapshotToHistory(currentSnapshot);
-    sendResponse(snapshot);
-    return false;
-  }
+    if (message?.type === "SAFENET_TAB_ANALYSIS_RESULT") {
+      currentSnapshot = message.payload?.snapshot || currentSnapshot;
+      currentResult = message.payload?.result || null;
+      currentError = message.payload?.error || null;
+      addSnapshotToHistory(currentSnapshot, currentResult);
+      appendAuditLog(currentSnapshot, currentResult);
+      overlayElements.status.textContent = currentError ? "Analysis error" : "Live analysis updated";
+      renderState();
+      sendResponse({ ok: true });
+      return false;
+    }
 
-  if (message?.type === "SAFENET_TAB_ANALYSIS_RESULT") {
-    currentSnapshot = message.payload?.snapshot || currentSnapshot;
-    currentResult = message.payload?.result || null;
-    currentError = message.payload?.error || null;
-    addSnapshotToHistory(currentSnapshot, currentResult);
-    appendAuditLog(currentSnapshot, currentResult);
-    overlayElements.status.textContent = currentError ? "Analysis error" : "Live analysis updated";
-    renderState();
-    sendResponse({ ok: true });
-    return false;
-  }
+    if (message?.type === "SAFENET_TAB_STATUS") {
+      currentSnapshot = message.payload?.snapshot || currentSnapshot;
+      addSnapshotToHistory(currentSnapshot);
+      currentError = null;
+      overlayElements.status.textContent = message.payload?.message || "Waiting for conversation";
+      renderState();
+      sendResponse({ ok: true });
+      return false;
+    }
 
-  if (message?.type === "SAFENET_TAB_STATUS") {
-    currentSnapshot = message.payload?.snapshot || currentSnapshot;
-    addSnapshotToHistory(currentSnapshot);
-    currentError = null;
-    overlayElements.status.textContent = message.payload?.message || "Waiting for conversation";
-    renderState();
-    sendResponse({ ok: true });
     return false;
-  }
-
-  return false;
-});
+  });
+}
 
 if (document.readyState === "loading") {
   document.addEventListener("DOMContentLoaded", bootstrap, { once: true });
