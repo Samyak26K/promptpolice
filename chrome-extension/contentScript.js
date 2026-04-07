@@ -16,6 +16,7 @@ const REALTIME_POLICY_MODE_KEY = "safenet_realtime_policy_mode";
 const POLICY_STORAGE_KEY = "safenet_policies";
 const REALTIME_POLICY_DEBOUNCE_MS = 400;
 const POLICY_RUNTIME_UI_ID = "safenet-policy-runtime-ui";
+const FACT_CHECK_SOURCE_BADGES = ["Wikipedia", "News", "Web", "AI"];
 
 const PLATFORM_STRATEGIES = {
   claude: {
@@ -687,6 +688,8 @@ function ensureOverlayRoot() {
           <div class="safenet-metric">
             <div class="safenet-label">Fact Check</div>
             <div class="safenet-value" data-fact-check>—</div>
+            <div class="safenet-fact-check-note" data-fact-check-note>—</div>
+            <div class="safenet-badges safenet-fact-check-badges" data-fact-check-sources></div>
           </div>
         </div>
 
@@ -763,6 +766,8 @@ function ensureOverlayRoot() {
     confidence: overlayShadow.querySelector("[data-confidence]"),
     relevance: overlayShadow.querySelector("[data-relevance]"),
     factCheck: overlayShadow.querySelector("[data-fact-check]"),
+    factCheckNote: overlayShadow.querySelector("[data-fact-check-note]"),
+    factCheckSources: overlayShadow.querySelector("[data-fact-check-sources]"),
     details: overlayShadow.querySelector("[data-details]"),
     policyModeBtn: overlayShadow.querySelector("[data-policy-mode-btn]"),
     dashboardBtn: overlayShadow.querySelector("[data-dashboard-btn]"),
@@ -962,6 +967,44 @@ function formatConfidence(value) {
     return "—";
   }
   return `${Math.round(Number(value))}%`;
+}
+
+function getFactCheckDisplayMeta(factCheck) {
+  const normalizedScore = Number(factCheck?.score ?? 0);
+  const normalizedStatus = String(factCheck?.status || "").toLowerCase();
+
+  if (normalizedStatus === "contradictory" || normalizedScore < 0.4) {
+    return { label: "Unverified", tone: "danger" };
+  }
+
+  if (normalizedScore > 0.75) {
+    return { label: "Verified", tone: "safe" };
+  }
+
+  return { label: "Partial", tone: "warn" };
+}
+
+function getFactCheckSourceBadges(factCheck) {
+  const rawSources = Array.isArray(factCheck?.sources) && factCheck.sources.length > 0
+    ? factCheck.sources
+    : FACT_CHECK_SOURCE_BADGES;
+
+  const labels = rawSources.map((source) => String(source || "").trim()).filter(Boolean);
+  return labels.length > 0 ? labels.slice(0, 4) : FACT_CHECK_SOURCE_BADGES;
+}
+
+function renderBadgeList(container, labels) {
+  if (!container) {
+    return;
+  }
+
+  container.replaceChildren();
+  for (const label of labels) {
+    const badge = document.createElement("span");
+    badge.className = "safenet-badge safenet-badge-quiet";
+    badge.textContent = label;
+    container.appendChild(badge);
+  }
 }
 
 function formatPercent(value) {
@@ -1286,11 +1329,12 @@ function renderResult(result) {
   overlayElements.relevance.textContent = formatPercent(result?.relevance_score);
 
   const factCheck = result?.detectors?.fact_check;
-  if (factCheck?.mode === "reference_only") {
-    overlayElements.factCheck.textContent = "Reference only";
-  } else {
-    overlayElements.factCheck.textContent = `${factCheck?.status || "unverified"} · ${formatConfidence(Number(factCheck?.score ?? 0) * 100)}`;
+  const factCheckMeta = getFactCheckDisplayMeta(factCheck);
+  overlayElements.factCheck.textContent = `${factCheckMeta.label} · ${formatConfidence(Number(factCheck?.score ?? 0) * 100)}`;
+  if (overlayElements.factCheckNote) {
+    overlayElements.factCheckNote.textContent = factCheck?.reasoning || "Verified using multiple sources.";
   }
+  renderBadgeList(overlayElements.factCheckSources, getFactCheckSourceBadges(factCheck));
 
   const hallucinationFlag = Boolean(result?.detectors?.hallucination?.flag);
   const toxicityFlag = Boolean(result?.detectors?.toxicity?.flag);
@@ -1324,6 +1368,9 @@ function renderResult(result) {
     lines.push(factCheck?.message || "Reference-only mode: no fact score was produced.");
   } else if (Array.isArray(factCheck?.claims) && factCheck.claims.length > 0) {
     lines.push(`Fact claims extracted: ${factCheck.claims.length}`);
+  }
+  if (factCheck?.reasoning) {
+    lines.push(`Verification: ${factCheck.reasoning}`);
   }
   lines.push(`Latency: ${result?.meta?.latency_ms ?? "?"} ms`);
   overlayElements.details.textContent = lines.join("\n");

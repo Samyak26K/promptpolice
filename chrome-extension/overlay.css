@@ -138,6 +138,18 @@
   line-height: 1;
 }
 
+.safenet-fact-check-note {
+  margin-top: 6px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: rgba(226, 232, 240, 0.78);
+}
+
+.safenet-fact-check-badges {
+  margin-top: 8px;
+  gap: 6px;
+}
+
 .safenet-section {
   border-radius: 12px;
   border: 1px solid rgba(148, 163, 184, 0.18);

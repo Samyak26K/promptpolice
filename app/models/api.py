@@ -73,6 +73,8 @@ class FactCheckOutput(BaseModel):
     mode: str = Field(default="standard", pattern="^(standard|reference_only)$")
     references: list[FactCheckSource] = Field(default_factory=list)
     message: str = ""
+    reasoning: str = ""
+    sources: list[str] = Field(default_factory=list)
     claims: list[FactCheckClaim] = Field(default_factory=list)
 
 

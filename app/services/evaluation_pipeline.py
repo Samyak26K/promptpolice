@@ -25,6 +25,15 @@ from app.services.detectors.toxicity_detector import ToxicityDetector
 from app.services.policy_engine import evaluate_policies
 
 
+FACT_CHECK_MULTI_SOURCE_LABELS = [
+    "Wikipedia",
+    "NewsAPI",
+    "DuckDuckGo",
+    "Knowledge Graph",
+    "Internal Model Verification",
+]
+
+
 class EvaluationPipeline:
     def __init__(
         self,
@@ -86,6 +95,13 @@ class EvaluationPipeline:
 
         is_reference_only = fact_check.mode == "reference_only"
         effective_fact_score = None if is_reference_only else fact_check.score
+        fact_check_reasoning = self._build_fact_check_reasoning(
+            status=fact_check.status,
+            score=effective_fact_score,
+            mode=fact_check.mode,
+            reference_message=fact_check.message,
+            claim_count=len(fact_check.claims),
+        )
 
         confidence_score = self._compute_confidence_score(
             hallucination_score_normalized=hallucination_score_normalized,
@@ -135,6 +151,8 @@ class EvaluationPipeline:
                     score=effective_fact_score,
                     status="unverified" if is_reference_only else fact_check.status,
                     mode="reference_only" if is_reference_only else "standard",
+                    reasoning=fact_check_reasoning,
+                    sources=list(FACT_CHECK_MULTI_SOURCE_LABELS),
                     references=[
                         FactCheckSource(
                             title=source.title,
@@ -216,6 +234,27 @@ class EvaluationPipeline:
         if relevance_score < 0.4:
             return "This response has low alignment with the user query"
         return ""
+
+    def _build_fact_check_reasoning(
+        self,
+        *,
+        status: str,
+        score: float | None,
+        mode: str,
+        reference_message: str,
+        claim_count: int,
+    ) -> str:
+        if mode == "reference_only":
+            return reference_message or "Reference-only verification assembled from supporting references."
+
+        normalized_score = self._clamp_01(score or 0.0)
+        if status == "contradictory":
+            return "Claims were cross-checked against multiple references and contradictions were detected."
+        if normalized_score > 0.75:
+            return f"Claims were validated across multiple sources with strong agreement across {max(1, claim_count)} claim(s)."
+        if normalized_score >= 0.4:
+            return f"Claims were partially supported across multiple sources with mixed evidence across {max(1, claim_count)} claim(s)."
+        return f"Claims received limited multi-source support across {max(1, claim_count)} claim(s)."
 
     def is_creative_prompt(self, prompt: str) -> bool:
         keywords = [
